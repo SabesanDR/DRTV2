@@ -1,0 +1,364 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>DRT Operations Hub</title>
+  <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/leaflet/1.9.4/leaflet.min.css"/>
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/Chart.js/4.4.1/chart.umd.min.js"></script>
+  <link rel="stylesheet" href="css/style.css">
+</head>
+<body>
+
+<!-- ══ HEADER ══════════════════════════════════════════════════════ -->
+<header class="header">
+  <div class="header-left">
+    <div class="logo">
+      <span class="logo-icon">🚌</span>
+      <div>
+        <div class="logo-title">DRT Operations Hub</div>
+        <div class="logo-sub">Durham Region Transit · Real-Time Intelligence</div>
+      </div>
+    </div>
+  </div>
+  <div class="header-right">
+    <div class="feed-pills" id="feedPills">
+      <span class="pill pill--unknown" id="pill-vehicles">Vehicles –</span>
+      <span class="pill pill--unknown" id="pill-trips">Trips –</span>
+      <span class="pill pill--unknown" id="pill-alerts">Alerts –</span>
+    </div>
+    <div class="status-badge" id="statusBadge">
+      <span class="status-dot"></span>
+      <span id="statusText">Connecting…</span>
+    </div>
+  </div>
+</header>
+
+<!-- ══ NAV ══════════════════════════════════════════════════════════ -->
+<nav class="nav">
+  <button class="nav-btn active" data-tab="dashboard">Dashboard</button>
+  <button class="nav-btn" data-tab="map">Live Map</button>
+  <button class="nav-btn" data-tab="analytics">Analytics</button>
+  <button class="nav-btn" data-tab="reports">Reports</button>
+  <button class="nav-btn" data-tab="admin">Admin</button>
+</nav>
+
+<!-- ══ MAIN ═════════════════════════════════════════════════════════ -->
+<main class="main">
+
+  <!-- ── DASHBOARD TAB ─────────────────────────────────────────── -->
+  <section id="tab-dashboard" class="tab active">
+
+    <!-- KPI row -->
+    <div class="kpi-row">
+      <div class="kpi-card">
+        <div class="kpi-label">Active Vehicles</div>
+        <div class="kpi-value" id="kpi-vehicles">–</div>
+        <div class="kpi-sub" id="kpi-vehicles-sub">loading…</div>
+      </div>
+      <div class="kpi-card">
+        <div class="kpi-label">Routes in Service</div>
+        <div class="kpi-value" id="kpi-routes">–</div>
+        <div class="kpi-sub" id="kpi-routes-sub">of <span id="kpi-total-routes">–</span> total</div>
+      </div>
+      <div class="kpi-card kpi-card--warn">
+        <div class="kpi-label">On-Time Rate</div>
+        <div class="kpi-value" id="kpi-ontime">–</div>
+        <div class="kpi-sub" id="kpi-ontime-sub">last refresh</div>
+      </div>
+      <div class="kpi-card kpi-card--alert">
+        <div class="kpi-label">Delayed Trips</div>
+        <div class="kpi-value" id="kpi-delayed">–</div>
+        <div class="kpi-sub">avg <span id="kpi-avg-delay">–</span> min delay</div>
+      </div>
+      <div class="kpi-card">
+        <div class="kpi-label">Service Alerts</div>
+        <div class="kpi-value" id="kpi-alerts">–</div>
+        <div class="kpi-sub" id="kpi-alerts-sub">active</div>
+      </div>
+      <div class="kpi-card">
+        <div class="kpi-label">GPS Snapped</div>
+        <div class="kpi-value" id="kpi-snapped">–</div>
+        <div class="kpi-sub">of tracked vehicles</div>
+      </div>
+    </div>
+
+    <!-- Body grid -->
+    <div class="dash-grid">
+
+      <!-- Alerts carousel -->
+      <div class="card card--alerts">
+        <div class="card-hdr">
+          <h2>Service Alerts</h2>
+          <span class="badge" id="alertBadge">0</span>
+        </div>
+        <div class="alerts-list" id="alertsList">
+          <div class="empty-state">No active service alerts</div>
+        </div>
+      </div>
+
+      <!-- Active routes list -->
+      <div class="card card--routes">
+        <div class="card-hdr">
+          <h2>Active Routes</h2>
+          <input class="search-input" id="routeSearch" placeholder="Search…">
+        </div>
+        <div class="routes-list" id="routesList">
+          <div class="loading-spinner"></div>
+        </div>
+      </div>
+
+      <!-- Data quality panel -->
+      <div class="card card--quality">
+        <div class="card-hdr"><h2>Data Quality</h2></div>
+        <div class="quality-grid" id="qualityGrid">
+          <div class="q-item">
+            <div class="q-label">GPS Coverage</div>
+            <div class="q-bar-wrap"><div class="q-bar q-bar--good" id="qb-gps"></div></div>
+            <div class="q-val" id="qv-gps">–</div>
+          </div>
+          <div class="q-item">
+            <div class="q-label">Snapped to Route</div>
+            <div class="q-bar-wrap"><div class="q-bar q-bar--info" id="qb-snap"></div></div>
+            <div class="q-val" id="qv-snap">–</div>
+          </div>
+          <div class="q-item">
+            <div class="q-label">Live (not stale)</div>
+            <div class="q-bar-wrap"><div class="q-bar q-bar--good" id="qb-live"></div></div>
+            <div class="q-val" id="qv-live">–</div>
+          </div>
+          <div class="q-item">
+            <div class="q-label">Teleport Flagged</div>
+            <div class="q-bar-wrap"><div class="q-bar q-bar--warn" id="qb-tele"></div></div>
+            <div class="q-val" id="qv-tele">–</div>
+          </div>
+        </div>
+        <div class="feed-status-list" id="feedStatusList"></div>
+      </div>
+
+      <!-- System health -->
+      <div class="card card--health">
+        <div class="card-hdr"><h2>System Health</h2></div>
+        <div class="health-list" id="healthList"></div>
+      </div>
+
+    </div><!-- /dash-grid -->
+  </section>
+
+  <!-- ── MAP TAB ───────────────────────────────────────────────── -->
+  <section id="tab-map" class="tab">
+    <div class="map-layout">
+
+      <!-- Sidebar -->
+      <div class="map-sidebar">
+        <div class="sidebar-section">
+          <label class="sidebar-label">Route</label>
+          <select id="routeSelect" class="sidebar-select">
+            <option value="">— All Routes —</option>
+          </select>
+        </div>
+        <div class="sidebar-section" id="routeInfoBox" style="display:none">
+          <div class="route-badge" id="routeBadge"></div>
+          <div class="route-meta" id="routeMeta"></div>
+        </div>
+        <div class="sidebar-section">
+          <div class="sidebar-label">Layers</div>
+          <label class="toggle-row"><input type="checkbox" id="togVehicles" checked><span>Vehicles</span></label>
+          <label class="toggle-row"><input type="checkbox" id="togRoutes" checked><span>Route Shape</span></label>
+          <label class="toggle-row"><input type="checkbox" id="togStops" checked><span>Stops</span></label>
+          <label class="toggle-row"><input type="checkbox" id="togAlerts" checked><span>Alerts</span></label>
+          <label class="toggle-row"><input type="checkbox" id="togFlags" checked><span>Flagged Stops</span></label>
+          <label class="toggle-row"><input type="checkbox" id="togSnapped"><span>Show raw GPS</span></label>
+        </div>
+        <div class="sidebar-section">
+          <div class="sidebar-label">Map Legend</div>
+          <div class="legend-item"><span class="leg-dot" style="background:#16a34a"></span>On time</div>
+          <div class="legend-item"><span class="leg-dot" style="background:#d97706"></span>Minor delay (&lt;5 min)</div>
+          <div class="legend-item"><span class="leg-dot" style="background:#dc2626"></span>Delayed (&gt;5 min)</div>
+          <div class="legend-item"><span class="leg-dot leg-dot--ring" style="border-color:#94a3b8"></span>Stale GPS</div>
+          <div class="legend-item"><span class="leg-dot" style="background:#3b82f6; border-radius:2px; width:18px; height:4px; display:inline-block; margin-right:6px"></span>Route shape</div>
+        </div>
+        <div class="sidebar-section">
+          <div class="sidebar-label">Live counts</div>
+          <div class="live-count" id="mapLiveCounts">–</div>
+        </div>
+        <div class="sidebar-tip">💡 Right-click a stop marker to report an issue</div>
+      </div>
+
+      <!-- Map container -->
+      <div class="map-wrap">
+        <div id="leafletMap"></div>
+        <!-- Info panel -->
+        <div class="map-info-panel" id="mapInfoPanel" style="display:none">
+          <button class="info-close" onclick="document.getElementById('mapInfoPanel').style.display='none'">✕</button>
+          <div id="mapInfoContent"></div>
+        </div>
+      </div>
+
+    </div>
+  </section>
+
+  <!-- ── ANALYTICS TAB ─────────────────────────────────────────── -->
+  <section id="tab-analytics" class="tab">
+    <div class="analytics-grid">
+
+      <!-- On-time performance -->
+      <div class="card analytics-card">
+        <div class="card-hdr"><h2>On-Time Performance by Route</h2></div>
+        <div class="chart-wrap"><canvas id="chartOnTime"></canvas></div>
+      </div>
+
+      <!-- Delay trend -->
+      <div class="card analytics-card">
+        <div class="card-hdr">
+          <h2>Delay Trend <span class="badge badge--info">30 min rolling</span></h2>
+        </div>
+        <div class="chart-wrap"><canvas id="chartDelayTrend"></canvas></div>
+      </div>
+
+      <!-- Fleet utilization -->
+      <div class="card analytics-card analytics-card--half">
+        <div class="card-hdr"><h2>Fleet Utilization</h2></div>
+        <div class="chart-wrap chart-wrap--sm"><canvas id="chartFleet"></canvas></div>
+        <div class="fleet-stats" id="fleetStats"></div>
+      </div>
+
+      <!-- Headway consistency -->
+      <div class="card analytics-card analytics-card--half">
+        <div class="card-hdr"><h2>Headway Consistency</h2></div>
+        <div class="chart-wrap chart-wrap--sm"><canvas id="chartHeadway"></canvas></div>
+      </div>
+
+      <!-- Top delayed stops -->
+      <div class="card analytics-card">
+        <div class="card-hdr"><h2>Top Delayed Stops</h2></div>
+        <table class="data-table" id="delayedStopsTable">
+          <thead><tr><th>Stop</th><th>Avg Delay</th><th>Max Delay</th><th>Trips</th></tr></thead>
+          <tbody><tr><td colspan="4" class="loading-cell">Loading…</td></tr></tbody>
+        </table>
+      </div>
+
+      <!-- GTFS Data Health -->
+      <div class="card analytics-card">
+        <div class="card-hdr"><h2>GTFS Data Health</h2></div>
+        <div class="health-grid" id="gtfsHealthGrid">
+          <div class="loading-spinner"></div>
+        </div>
+      </div>
+
+    </div>
+  </section>
+
+  <!-- ── REPORTS TAB ───────────────────────────────────────────── -->
+  <section id="tab-reports" class="tab">
+    <div class="reports-grid">
+      <div class="card">
+        <div class="card-hdr"><h2>Performance Summary</h2></div>
+        <div class="chart-wrap"><canvas id="chartPerfSummary"></canvas></div>
+      </div>
+      <div class="card">
+        <div class="card-hdr"><h2>Busiest Stops (by trip count)</h2></div>
+        <table class="data-table" id="busiestStopsTable">
+          <thead><tr><th>Stop</th><th>Trip Count</th><th>Avg Delay</th></tr></thead>
+          <tbody><tr><td colspan="3" class="loading-cell">Loading…</td></tr></tbody>
+        </table>
+      </div>
+      <div class="card card--full">
+        <div class="card-hdr"><h2>Export</h2></div>
+        <div class="export-row">
+          <button class="btn btn-primary" onclick="exportCSV()">📥 Export Delay Data CSV</button>
+          <button class="btn btn-secondary" onclick="exportJSON()">📄 Export as JSON</button>
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <!-- ── ADMIN TAB ─────────────────────────────────────────────── -->
+  <section id="tab-admin" class="tab">
+    <div class="admin-wrap">
+      <div class="card admin-login-card" id="adminLoginCard">
+        <h2>Admin Access</h2>
+        <p>Enter the admin password to manage flagged stops.</p>
+        <div class="admin-login-row">
+          <input type="password" id="adminPwd" placeholder="Password" class="sidebar-input">
+          <button class="btn btn-primary" onclick="adminLogin()">Login</button>
+        </div>
+      </div>
+      <div id="adminContent" style="display:none">
+        <div class="card">
+          <div class="card-hdr">
+            <h2>Flagged Stops</h2>
+            <select id="flagStatusFilter" class="sidebar-select" onchange="loadFlaggedStops()">
+              <option value="">All</option>
+              <option value="open" selected>Open</option>
+              <option value="resolved">Resolved</option>
+            </select>
+          </div>
+          <table class="data-table" id="flagsTable">
+            <thead><tr><th>Stop</th><th>Issue</th><th>Comment</th><th>Status</th><th>Date</th><th>Action</th></tr></thead>
+            <tbody><tr><td colspan="6" class="loading-cell">Loading…</td></tr></tbody>
+          </table>
+        </div>
+        <div class="card" style="margin-top:1rem">
+          <div class="card-hdr"><h2>Flag Summary</h2></div>
+          <div id="flagSummary" class="flag-summary-grid"></div>
+        </div>
+      </div>
+    </div>
+  </section>
+
+</main>
+
+<!-- ══ FOOTER ═══════════════════════════════════════════════════════ -->
+<footer class="footer">
+  <span>© Durham Region Transit Operations Hub</span>
+  <span id="lastRefresh">–</span>
+</footer>
+
+<!-- ══ FLAG MODAL ════════════════════════════════════════════════════ -->
+<div id="flagModal" class="modal-backdrop" style="display:none" onclick="if(event.target===this)closeFlagModal()">
+  <div class="modal">
+    <div class="modal-hdr">
+      <h3>Report Stop Issue</h3>
+      <button class="modal-close" onclick="closeFlagModal()">✕</button>
+    </div>
+    <div class="modal-body">
+      <div class="form-row">
+        <label>Stop ID</label>
+        <input type="text" id="fStopId" readonly class="sidebar-input">
+      </div>
+      <div class="form-row">
+        <label>Stop Name</label>
+        <input type="text" id="fStopName" readonly class="sidebar-input">
+      </div>
+      <div class="form-row">
+        <label>Issue Type *</label>
+        <select id="fReason" class="sidebar-select">
+          <option value="">— Select —</option>
+          <option value="missing_shelter">Missing Shelter</option>
+          <option value="safety_concern">Safety Concern</option>
+          <option value="damaged_infrastructure">Damaged Infrastructure</option>
+          <option value="accessibility_issue">Accessibility Issue</option>
+          <option value="signage_missing">Signage Missing</option>
+          <option value="other">Other</option>
+        </select>
+      </div>
+      <div class="form-row">
+        <label>Comment</label>
+        <textarea id="fComment" rows="3" class="sidebar-input" placeholder="Additional details…"></textarea>
+      </div>
+    </div>
+    <div class="modal-footer">
+      <button class="btn btn-secondary" onclick="closeFlagModal()">Cancel</button>
+      <button class="btn btn-primary" onclick="submitFlag()">Submit Report</button>
+    </div>
+  </div>
+</div>
+
+<script src="https://cdnjs.cloudflare.com/ajax/libs/leaflet/1.9.4/leaflet.min.js"></script>
+<script src="js/app.js"></script>
+<script src="js/map.js"></script>
+<script src="js/analytics.js"></script>
+<script src="js/admin.js"></script>
+</body>
+</html>
