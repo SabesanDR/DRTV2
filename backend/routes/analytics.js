@@ -118,8 +118,8 @@ router.get('/on-time', (_req, res) => {
       route_color: route?.route_color || '2E7D32',
       total_trips: delays.length,
       on_time: onTimeCt,
-      delayed: delays.filter(d => d > 300).length,
-      early: delays.filter(d => d < -60).length,
+      delayed: delays.filter(d => d >= 300).length,
+      early: delays.filter(d => d <= -300).length,
       on_time_percent: pct(onTimeCt, delays.length),
       avg_delay_sec: Math.round(avg(delays)),
       avg_delay_min: Math.round((avg(delays) / 60) * 10) / 10
