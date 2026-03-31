@@ -11,6 +11,18 @@
   --c-muted:    #64748b;
   --c-header:   #0f172a;
   --c-nav:      #1e293b;
+  
+  --drt-green: #2E7D32;
+  --drt-green-dark: #1B5E20;
+  --drt-green-accent: #66BB6A;
+
+  --drt-black: #000000;
+  --drt-grey-dark: #2B2B2B;
+  --drt-grey-medium: #4F4F4F;
+  --drt-grey-light: #E0E0E0;
+
+  --drt-white: #FFFFFF;
+
 
   --c-green:    #16a34a;
   --c-green-lt: #dcfce7;
@@ -32,9 +44,9 @@
 
 html, body {
   height: 100%;
-  font-family: 'Segoe UI', system-ui, -apple-system, sans-serif;
-  background: var(--c-bg);
-  color: var(--c-text);
+  font-family: "Segoe UI", Roboto, Arial, sans-serif;
+  background-color: var(--drt-grey-light);
+  color: var(--drt-grey-dark);
   font-size: 14px;
   line-height: 1.5;
 }
@@ -126,11 +138,11 @@ body { display: flex; flex-direction: column; }
 
 /* ── CARDS ───────────────────────────────────────────────── */
 .card {
-  background: var(--c-surface);
-  border: 1px solid var(--c-border);
-  border-radius: var(--radius);
-  box-shadow: var(--shadow);
-  overflow: hidden;
+  background-color: var(--drt-white);
+  border-left: 4px solid var(--drt-green);
+  border-radius: 6px;
+  padding: 16px;
+  box-shadow: 0 2px 6px rgba(0,0,0,0.1);
 }
 .card-hdr {
   padding: .75rem 1rem;
@@ -431,7 +443,14 @@ body { display: flex; flex-direction: column; }
   transition: opacity var(--transition), background var(--transition);
 }
 .btn:hover { opacity: .88; }
-.btn-primary   { background: var(--c-drt); color: #fff; }
+.btn-primary   { 
+background-color: var(--drt-green);
+  color: var(--drt-white);
+  border: none;
+  padding: 10px 16px;
+  border-radius: 4px;
+  cursor: pointer;
+}
 .btn-secondary { background: var(--c-bg); color: var(--c-text); border-color: var(--c-border); }
 
 /* ── BADGE ───────────────────────────────────────────────── */
