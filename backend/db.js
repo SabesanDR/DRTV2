@@ -62,6 +62,7 @@ async function init() {
     console.log('JSON files not found — streaming from GTFS zip (slow first run)...');
     await loadFromZip();
   }
+  buildStopTimesByTrip();
 
   buildDerivedLookups();
   console.log(`Store ready: ${store.routesList.length} routes, ` +
@@ -230,6 +231,49 @@ async function loadStopsFromZip() {
     zip.on('error', () => resolve());
   });
 }
+
+// ------------------------------------------------------------
+// Build stopTimesByTrip index
+// Handles object-based stop_times.json safely
+// ------------------------------------------------------------
+function buildStopTimesByTrip() {
+  store.stopTimesByTrip = {};
+
+  const stopTimesRaw = store.stopTimes || {};
+
+  // If stopTimes is already keyed by trip_id → use it directly
+  if (!Array.isArray(stopTimesRaw)) {
+    for (const [key, value] of Object.entries(stopTimesRaw)) {
+      // Case: already grouped by trip_id
+      if (Array.isArray(value)) {
+        store.stopTimesByTrip[key] = value.slice().sort(
+          (a, b) => a.stop_sequence - b.stop_sequence
+        );
+      }
+      // Case: flat object entries
+      else if (value.trip_id) {
+        if (!store.stopTimesByTrip[value.trip_id]) {
+          store.stopTimesByTrip[value.trip_id] = [];
+        }
+        store.stopTimesByTrip[value.trip_id].push(value);
+      }
+    }
+  }
+
+  // Final ordering safeguard
+  for (const tripId in store.stopTimesByTrip) {
+    store.stopTimesByTrip[tripId].sort(
+      (a, b) => a.stop_sequence - b.stop_sequence
+    );
+  }
+
+  console.log(
+    '[GTFS] stopTimesByTrip built:',
+    Object.keys(store.stopTimesByTrip).length,
+    'trips'
+  );
+}
+
 
 // ── build derived route-shape structures if loaded from zip ──────
 function buildDerivedLookups() {

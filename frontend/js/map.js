@@ -2,6 +2,8 @@
    map.js — DRT Operations Hub · Leaflet Map
 ═══════════════════════════════════════════════════════════ */
 'use strict';
+// Presenter Mode — live vehicle marker registry
+window.liveVehicleMarkers = {};
 
 let _map         = null;
 let _mapInited   = false;
@@ -66,6 +68,8 @@ function initMap() {
   refreshMapVehicles();
   _mapInterval = setInterval(refreshMapVehicles, 15_000);
 }
+
+
 
 // ── populate route dropdown ───────────────────────────────────────
 async function populateRouteDropdown() {
@@ -197,6 +201,7 @@ async function refreshMapVehicles() {
     window.global_vehicles_cache = vehicles;
 
     LG.vehicles.clearLayers();
+    window.liveVehicleMarkers = {};
     LG.raw.clearLayers();
 
     vehicles.forEach(v => {
@@ -211,6 +216,10 @@ async function refreshMapVehicles() {
         icon: vehicleIcon(v),
         zIndexOffset: v.is_stale ? 0 : 100,
       });
+      
+      m.__vehicleData = v;
+      window.liveVehicleMarkers[v.vehicle_id] = m;
+
       m.bindPopup(buildVehiclePopup(v));
       m.addTo(LG.vehicles);
 
@@ -236,7 +245,13 @@ async function refreshMapVehicles() {
         `<span style="color:#16a34a">${snapped} snapped</span> · ` +
         `<span style="color:#d97706">${stale} stale</span>`;
     }
-
+      // Re‑apply Presenter Mode filtering after refresh
+      if (
+        window.presenterMapController &&
+        presenterVehicleVisibility.activeRegion
+          ) {
+          applyRegionVehicleFilter(presenterVehicleVisibility.activeRegion);
+            }
   } catch (e) {
     console.warn('Vehicle refresh error:', e);
   }
@@ -401,6 +416,144 @@ function syncLayerVisibility() {
   if (tog('togFlags'))    _map.addLayer(LG.flags);     else _map.removeLayer(LG.flags);
   if (tog('togSnapped'))  _map.addLayer(LG.raw);       else _map.removeLayer(LG.raw);
 }
+
+/**
+ * ================================================================
+ * PRESENTER MODE — MAP INTEGRATION
+ * ================================================================
+ *
+ * This block integrates Presenter Mode with the existing map.
+ * It exposes a small, controlled interface that allows:
+ *
+ *   - Zooming the map to a specific region
+ *   - Filtering vehicles by region boundaries
+ *   - Showing only relevant routes during presentation
+ *
+ * IMPORTANT:
+ * -----------
+ * This code does NOT alter normal map behavior unless
+ * Presenter Mode is actively invoking it.
+ *
+ * ================================================================
+ */
+
+/**
+ * Cache of all live vehicle markers.
+ * We reuse existing markers rather than rebuilding them.
+ */
+const presenterVehicleVisibility = {
+  activeRegion: null
+};
+
+/**
+ * Determines whether a vehicle lies within a region bounding box.
+ *
+ * @param {Object} vehicle - Live vehicle object
+ * @param {Array} bounds  - [[southLat, westLon], [northLat, eastLon]]
+ * @returns {boolean}
+ */
+function isVehicleInRegion(vehicle, bounds) {
+  const [[southLat, westLon], [northLat, eastLon]] = bounds;
+
+  return (
+    vehicle.latitude  >= southLat &&
+    vehicle.latitude  <= northLat &&
+    vehicle.longitude >= westLon &&
+    vehicle.longitude <= eastLon
+  );
+}
+
+/**
+ * Apply region-based visibility filtering to vehicles.
+ *
+ * Vehicles inside the region:
+ *   ✅ Visible
+ * Vehicles outside the region:
+ *   ❌ Hidden (not removed, just hidden)
+ */
+function applyRegionVehicleFilter(region) {
+  presenterVehicleVisibility.activeRegion = region;
+
+  if (!window.liveVehicleMarkers) {
+    console.warn("Vehicle marker registry not found");
+    return;
+  }
+
+  Object.values(window.liveVehicleMarkers).forEach(marker => {
+    const vehicle = marker.__vehicleData;
+    if (!vehicle) return;
+
+    const visible = isVehicleInRegion(vehicle, region.bounds);
+
+    if (visible) {
+      marker.setOpacity(1);
+    } else {
+      marker.setOpacity(0);
+    }
+  });
+}
+
+/**
+ * Restore normal vehicle visibility (exit Presenter Mode).
+ */
+function clearRegionVehicleFilter() {
+  presenterVehicleVisibility.activeRegion = null;
+
+  if (!window.liveVehicleMarkers) return;
+
+  Object.values(window.liveVehicleMarkers).forEach(marker => {
+    marker.setOpacity(1);
+  });
+}
+
+/**
+ * Zoom the map to a region and apply filtering.
+ *
+ * This is the PRIMARY entry point used by presenter.js
+ */
+function showRegion(region, options = {}) {
+  const {
+    animate = true,
+    durationMs = 2000
+  } = options;
+
+ if (!_map) {
+  console.warn("Leaflet map not initialized");
+  return;
+}
+
+// Zoom map to region
+_map.fitBounds(region.bounds, {
+  padding: [40, 40],
+  animate,
+  duration: durationMs / 1000
+});
+
+  // Apply vehicle filtering
+  applyRegionVehicleFilter(region);
+
+  console.log(
+    `[MAP] Presenter region applied: ${region.name}`
+  );
+  _currentRouteId = '';
+}
+
+/**
+ * Expose the Presenter Mode controller for presenter.js
+ *
+ * We intentionally keep this interface minimal.
+ */
+window.presenterMapController = {
+  showRegion,
+  clearRegionVehicleFilter
+};
+
+/**
+ * ================================================================
+ * END PRESENTER MODE MAP INTEGRATION
+ * ================================================================
+ */
+
 
 // expose
 window.initMap            = initMap;

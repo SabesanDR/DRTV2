@@ -54,6 +54,27 @@ global.cache = {
   delayHistory:   [],   // [ {trip_id, route_id, delay_sec, timestamp} ]
 };
 
+const { store } = require('./db'); // adjust path if needed
+
+const EARLY_THRESHOLD_SEC = -29;
+const LATE_THRESHOLD_SEC  = 5 * 60 + 29; // 329 seconds
+
+function classifyArrivalBySeconds(deltaSec) {
+  if (deltaSec > LATE_THRESHOLD_SEC) return 'late';
+  if (deltaSec < EARLY_THRESHOLD_SEC) return 'early';
+  return 'on_time';
+}
+
+function scheduledStopTimeToUnix(actualUnix, hhmmss) {
+  if (!actualUnix || !hhmmss) return null;
+
+  const d = new Date(actualUnix * 1000);
+  d.setHours(0, 0, 0, 0);
+
+  const [h, m, s] = hhmmss.split(':').map(Number);
+  return Math.floor(d.getTime() / 1000) + (h * 3600 + m * 60 + s);
+}
+
 // ── haversine (meters) ───────────────────────────────────────────
 function haversine(lat1, lon1, lat2, lon2) {
   const R = 6_371_000;
@@ -63,6 +84,7 @@ function haversine(lat1, lon1, lat2, lon2) {
   const a = Math.sin(df/2)**2 + Math.cos(f1)*Math.cos(f2)*Math.sin(dl/2)**2;
   return R * 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1-a));
 }
+
 
 // ── snap GPS point to nearest shape polyline ────────────────────
 function snapToShape(lat, lon, shapeCoords) {
@@ -79,6 +101,24 @@ function snapToShape(lat, lon, shapeCoords) {
     return { lat: bestLat, lon: bestLon, snapped: true, snap_distance_m: Math.round(bestDist) };
   }
   return { lat, lon, snapped: false, snap_distance_m: Math.round(bestDist) };
+}
+
+// ── derive scheduled arrival time (unix seconds) ────────────────
+function getScheduledArrivalUnix(tripId, stopSequence) {
+  const tripStops = db.store.stopTimesByTrip?.[tripId];
+  if (!tripStops || tripStops.length === 0) return null;
+
+  const stop = stopSequence
+    ? tripStops.find(s => s.stop_sequence === stopSequence)
+    : tripStops[0];
+
+  if (!stop || stop.arrival_time_sec == null) return null;
+
+  // GTFS arrival_time_sec is seconds since midnight
+  const serviceDateMidnight =
+    db.store.serviceDateMidnight || 0;
+
+  return serviceDateMidnight + stop.arrival_time_sec;
 }
 
 // ── GTFS-RT protobuf parsing ─────────────────────────────────────
@@ -354,40 +394,163 @@ async function fetchTripUpdates() {
       const routeId = tu.trip?.route_id || db.store.tripToRoute[tripId] || '';
       const ts      = Number(tu.timestamp) || Math.floor(Date.now() / 1000);
 
-      // Extract per-stop delays
-      const stopUpdates = (tu.stop_time_update || []).map(stu => ({
-        stop_id:        stu.stop_id || '',
-        stop_sequence:  stu.stop_sequence || 0,
-        arrival_delay:  stu.arrival?.delay   || 0,
-        departure_delay:stu.departure?.delay  || 0,
-        arrival_time:   Number(stu.arrival?.time)   || 0,
-        departure_time: Number(stu.departure?.time)  || 0,
-      }));
+      // Extract per-stop delays (keep null for missing fields)
+      const stopUpdates = (tu.stop_time_update || []).map(stu => {
+        const arrivalDelay = (typeof stu.arrival?.delay === 'number') ? stu.arrival.delay : null;
+        const departureDelay = (typeof stu.departure?.delay === 'number') ? stu.departure.delay : null;
 
-      const firstDelay = stopUpdates.length > 0 ? stopUpdates[0].arrival_delay : 0;
+        return {
+          stop_id:         stu.stop_id || '',
+          stop_sequence:   stu.stop_sequence || 0,
+          arrival_delay:   arrivalDelay,
+          departure_delay: departureDelay,
+          arrival_time:    Number(stu.arrival?.time)   || 0,
+          departure_time:  Number(stu.departure?.time)  || 0,
+        };
+      });
+
+      // Find first actual delay from stop updates (arrival preferred)
+      let firstDelay = null;
+      let delaySource = 'none';
+
+      if (stopUpdates.length > 0) {
+        // DEBUG: Log raw stop update data for first few trips
+        if (updates.length < 3) {
+          console.log(`[DEBUG] Trip ${tripId}: stop_updates=`, JSON.stringify(stopUpdates.slice(0, 2)));
+        }
+
+        for (const stop of stopUpdates) {
+          if (stop.arrival_delay !== null && stop.arrival_delay !== undefined) {
+            firstDelay = stop.arrival_delay;
+            delaySource = 'arrival_delay';
+            break;
+          }
+          if (stop.departure_delay !== null && stop.departure_delay !== undefined) {
+            firstDelay = stop.departure_delay;
+            delaySource = 'departure_delay';
+            break;
+          }
+        }
+      }
+
+      let derivedDelay = null;
+
+      // ── derive delay using GPS if GTFS-RT delay is missing ──
+      if (firstDelay === null && stopUpdates.length > 0) {
+        const gpsVehicle = global.cache.vehicles.find(v => v.trip_id === tripId);
+
+        if (gpsVehicle && gpsVehicle.snapped && gpsVehicle.timestamp) {
+          // Find next upcoming stop
+          const nextStop = stopUpdates.find(s => s.stop_sequence > 0);
+          if (nextStop) {
+            const scheduledUnix = getScheduledArrivalUnix(tripId, nextStop.stop_sequence);
+
+            if (scheduledUnix !== null && scheduledUnix > 0) {
+              // Vehicle timestamp in seconds, scheduled in seconds
+              derivedDelay = Math.round(gpsVehicle.timestamp - scheduledUnix);
+              firstDelay = derivedDelay;
+              delaySource = 'derived_from_gps';
+            }
+          }
+        }
+      }
+
+      // Determine status with explicit thresholds
+      let status = 'unknown';
+      if (firstDelay !== null && typeof firstDelay === 'number') {
+        if (firstDelay > 60) status = 'late';        // > 1 min
+        else if (firstDelay < -60) status = 'early'; // < -1 min
+        else status = 'on-time';
+      }
 
       updates.push({
-        trip_id:       tripId,
-        route_id:      routeId,
-        arrival_delay: firstDelay,
-        stop_updates:  stopUpdates,
-        timestamp:     ts,
+        trip_id:               tripId,
+        route_id:              routeId,
+        arrival_delay:         firstDelay,
+        derived_arrival_delay: derivedDelay,
+        status,
+        delay_source:          delaySource,
+        stop_updates:          stopUpdates,
+        timestamp:             ts,
       });
+
     }
 
     global.cache.tripUpdates    = updates;
     global.cache.lastUpdated.tripUpdates = new Date().toISOString();
 
-    // Record delay history
+    // ── Feed health statistics (DO NOT USE FOR LATE/ON‑TIME) ──
+const delayStats = {
+  with_rt_delay: updates.filter(u =>
+    u.delay_source === 'arrival_delay' ||
+    u.delay_source === 'departure_delay'
+  ).length,
+
+  derived_gps: updates.filter(u =>
+    u.delay_source === 'derived_from_gps'
+  ).length,
+
+  unknown: updates.filter(u =>
+    u.delay_source === 'none'
+  ).length,
+};
+
+
+    // ── Console on‑time metrics (STATIC GTFS JOIN — SAME AS ANALYTICS) ──
+let late = 0;
+let early = 0;
+let onTime = 0;
+
+for (const u of updates) {
+  if (!u.trip_id || !u.stop_updates?.length) continue;
+
+  const stopTimes = db.store.stopTimesByTrip[u.trip_id];
+  if (!stopTimes) continue;
+
+  const rtStop = u.stop_updates[0];
+  const actualUnix = rtStop.arrival_time;
+  if (!actualUnix) continue;
+
+  let staticStop = stopTimes.find(
+    s => s.stop_sequence === rtStop.stop_sequence
+  ) || stopTimes.find(
+    s => s.stop_id === rtStop.stop_id
+  );
+
+  if (!staticStop || !staticStop.arrival_time) continue;
+
+  const scheduledUnix =
+    scheduledStopTimeToUnix(actualUnix, staticStop.arrival_time);
+  if (!scheduledUnix) continue;
+
+ const deltaSec = actualUnix - scheduledUnix;
+  const status = classifyArrivalBySeconds(deltaSec);
+
+  if (status === 'late') late++;
+  else if (status === 'early') early++;
+  else onTime++;
+}
+
+console.log(
+  `Trip updates: ${updates.length} | ` +
+  `RT: ${delayStats.with_rt_delay} | ` +
+  `GPS: ${delayStats.derived_gps} | ` +
+  `Unknown: ${delayStats.unknown} | ` +
+  `Late: ${late} | Early: ${early} | OnTime: ${onTime}`
+);
+    // Record delay history for analytics (rolling 30 min)
     const now    = Date.now();
     const cutoff = now - 30 * 60_000;
     global.cache.delayHistory = [
       ...global.cache.delayHistory.filter(h => h.ts > cutoff),
-      ...updates.map(u => ({ trip_id: u.trip_id, route_id: u.route_id,
-                              delay_sec: u.arrival_delay, ts: now })),
+      ...updates.filter(u => u.arrival_delay !== null).map(u => ({ 
+        trip_id: u.trip_id, 
+        route_id: u.route_id,
+        delay_sec: u.arrival_delay, 
+        status: u.status,
+        ts: now 
+      })),
     ];
-
-    console.log(`Trip updates: ${updates.length}`);
   } catch (err) {
     console.warn('Trip updates error:', err.message);
   }
