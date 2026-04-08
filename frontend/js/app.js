@@ -1,8 +1,8 @@
 /* ═══════════════════════════════════════════════════════════
    app.js — DRT Operations Hub · Main Controller
 ═══════════════════════════════════════════════════════════ */
-'use strict';
 
+'use strict';
 const API = '';   // same-origin; empty string = relative URLs
 let currentTab = 'dashboard';
 let dashTimer  = null;
