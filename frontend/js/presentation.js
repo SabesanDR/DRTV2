@@ -1,48 +1,44 @@
 // frontend/js/presentation.js
+'use strict';
 
-let currentMunicipalityIndex = 0;
+let currentIndex = 0;
 
-// LIST OF MUNICIPALITIES (we will rotate through these)
 const municipalities = [
-  { name: "Pickering", bbox: [-79.1, 43.8, -78.9, 43.9] },
-  { name: "Ajax", bbox: [-79.05, 43.83, -78.95, 43.88] },
-  { name: "Whitby", bbox: [-78.98, 43.84, -78.92, 43.90] },
-  { name: "Oshawa", bbox: [-78.93, 43.85, -78.83, 43.95] },
-  { name: "Uxbridge", bbox: [-79.15, 44.07, -79.0, 44.15] },
-  { name: "Brock", bbox: [-79.2, 44.3, -78.9, 44.5] },
-  { name: "Scugog", bbox: [-79.25, 44.1, -78.95, 44.3] },
-  { name: "Clarington", bbox: [-78.9, 43.85, -78.3, 44.2] }
+  { name: "Pickering", bounds: [[43.80, -79.10], [43.90, -78.90]] },
+  { name: "Ajax", bounds: [[43.83, -79.05], [43.88, -78.95]] },
+  { name: "Whitby", bounds: [[43.84, -78.98], [43.90, -78.92]] },
+  { name: "Oshawa", bounds: [[43.85, -78.93], [43.95, -78.83]] },
+  { name: "Uxbridge", bounds: [[44.07, -79.15], [44.15, -79.00]] },
+  { name: "Brock", bounds: [[44.30, -79.20], [44.50, -78.90]] },
+  { name: "Scugog", bounds: [[44.10, -79.25], [44.30, -78.95]] },
+  { name: "Clarington", bounds: [[43.85, -78.90], [44.20, -78.30]] }
 ];
 
-// THIS STARTS THE PRESENTATION MODE
 window.startPresentation = function () {
+  initPresentationMap();
   showMunicipality();
 
-  if (window.presentationInterval) {
-    clearInterval(window.presentationInterval);
-  }
-
+  clearInterval(window.presentationInterval);
   window.presentationInterval = setInterval(() => {
-    currentMunicipalityIndex =
-      (currentMunicipalityIndex + 1) % municipalities.length;
+    currentIndex = (currentIndex + 1) % municipalities.length;
     showMunicipality();
   }, 25000);
 };
 
-
-// DISPLAYS ONE MUNICIPALITY
 function showMunicipality() {
-  const municipality = municipalities[currentMunicipalityIndex];
+  const m = municipalities[currentIndex];
 
-  // Update title
-  document.getElementById("presentation-title").innerText =
-    municipality.name;
+  document.getElementById("presentation-title").textContent = m.name;
 
-  // Tell the map to zoom
-  window.zoomToMunicipality(municipality.bbox);
+  // Use the SAME vehicle data already fetched by Live Map
+  const vehicles = window.global_vehicles_cache || [];
 
-  // Filter vehicles on map
-  window.showVehiclesInBBox(municipality.bbox);
+  const filtered = vehicles.filter(v =>
+    v.latitude >= m.bounds[0][0] &&
+    v.latitude <= m.bounds[1][0] &&
+    v.longitude >= m.bounds[0][1] &&
+    v.longitude <= m.bounds[1][1]
+  );
 
-  loadAlerts(municipality.name);
+  updatePresentationMap(filtered, m.bounds);
 }

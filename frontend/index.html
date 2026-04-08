@@ -41,7 +41,7 @@
   <button class="nav-btn" data-tab="analytics">Analytics</button>
   <button class="nav-btn" data-tab="reports">Reports</button>
   <button class="nav-btn" data-tab="admin">Admin</button>
-  <button class="tab-button" data-tab="presentation">Presentation</button>
+  <button class="nav-btn" data-tab="presentation">Presentation</button>
 </nav>
 
 <!-- ══ MAIN ═════════════════════════════════════════════════════════ -->
@@ -311,6 +311,20 @@
     </div>
   </section>
 
+<!-- ── PRESENTATION TAB ───────────────────────────────────────── -->
+<section id="tab-presentation" class="tab">
+
+  <h1 id="presentation-title" style="margin:1rem"></h1>
+
+  <div class="map-wrap" style="height:75vh">
+    <div id="presentationMap"></div>
+  </div>
+
+</section>
+
+
+  
+
 </main>
 
 <!-- ══ FOOTER ═══════════════════════════════════════════════════════ -->
@@ -360,12 +374,11 @@
 </div>
 
 <script src="https://cdnjs.cloudflare.com/ajax/libs/leaflet/1.9.4/leaflet.min.js"></script>
+
 <script src="js/map.js"></script>
+<script src="js/presentationMap.js"></script>
 <script src="js/presentation.js"></script>
 <script src="js/app.js"></script>
-<script src="js/regions.js"></script>
-<script src="js/presenter.js"></script>
-<script src="js/map.js"></script>
 <script src="js/analytics.js"></script>
 <script src="js/admin.js"></script>
 </body>

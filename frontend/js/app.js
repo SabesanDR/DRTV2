@@ -37,6 +37,7 @@ function switchTab(name) {
   if (name === 'map')       { initMap();       refreshMapVehicles(); }
   if (name === 'analytics') { refreshAnalytics(); }
   if (name === 'reports')   { refreshReports(); }
+  if (name === 'presentation') { startPresentation(); }
 }
 
 // ── helpers ───────────────────────────────────────────────────────
