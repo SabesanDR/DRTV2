@@ -70,7 +70,13 @@ function initMap() {
 }
 
 
-
+// Official DRT on‑time performance thresholds (seconds)
+const PERFORMANCE_THRESHOLDS = {
+  EARLY: -30,     // more than 30s early
+  ONTIME_LOW: -30,
+  ONTIME_HIGH: 330, // 5m 30s late
+  LATE: 330
+};
 // ── populate route dropdown ───────────────────────────────────────
 async function populateRouteDropdown() {
   try {
@@ -260,10 +266,21 @@ async function refreshMapVehicles() {
 // ── vehicle icon ──────────────────────────────────────────────────
 function vehicleIcon(v) {
   const delay = v.arrival_delay || 0;
-  let bg = '#16a34a';
-  if (delay > 300)      bg = '#dc2626';
-  else if (delay > 60)  bg = '#d97706';
+  let bg = '#16a34a'; // on‑time
 
+  if (delay < PERFORMANCE_THRESHOLDS.EARLY) {
+    bg = '#2563eb'; // early (blue)
+  } 
+  else if (delay > PERFORMANCE_THRESHOLDS.LATE) {
+    bg = '#dc2626'; // late (red)
+  }
+
+  // Optional: if you want to visually show "minor late" differently
+  else if (delay > PERFORMANCE_THRESHOLDS.ONTIME_HIGH - 150) {
+    bg = '#d97706'; // approaching late (orange)
+  }
+
+  // rest of the function stays exactly the same
   const size   = 28;
   const stale  = v.is_stale;
   const border = stale ? '#94a3b8' : '#ffffff';
