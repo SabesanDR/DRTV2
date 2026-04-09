@@ -314,6 +314,9 @@ async function fetchVehiclePositions() {
 
     const now  = Date.now();
     const vehicles = [];
+    // ✅ Build authoritative trip delay lookup ONCE per refresh
+      const tripDelayMap = buildTripDelayMapFromCache(global.cache.tripUpdates || []);
+
 
     for (const entity of feed.entity) {
       const vp = entity.vehicle;
@@ -343,6 +346,11 @@ async function fetchVehiclePositions() {
         route_id:         routeId,
         latitude:         snappedLat,
         longitude:        snappedLon,
+
+        
+        // ✅ AUTHORITATIVE delay from Trip Updates
+        trip_delay: tripDelayMap.get(tripId) ?? 0,
+
         raw_latitude:     lat,
         raw_longitude:    lon,
         bearing:          vp.position.bearing   || 0,
@@ -643,6 +651,34 @@ app.use((err, _req, res, _next) => {
   console.error(err.stack);
   res.status(500).json({ error: 'Internal server error' });
 });
+
+/**
+ * Build a map of trip_id → worst delay (seconds)
+ * Source: normalized global.cache.tripUpdates (authoritative)
+ */
+function buildTripDelayMapFromCache(tripUpdates) {
+  const tripDelayMap = new Map();
+
+  tripUpdates.forEach(u => {
+    if (!u.trip_id) return;
+
+    let d = null;
+
+    // Prefer derived delay if present, else GTFS arrival_delay
+    if (typeof u.derived_arrival_delay === 'number') {
+      d = u.derived_arrival_delay;
+    } else if (typeof u.arrival_delay === 'number') {
+      d = u.arrival_delay;
+    }
+
+    if (d !== null) {
+      tripDelayMap.set(u.trip_id, d);
+    }
+  });
+
+  return tripDelayMap;
+}
+
 
 // ── startup ──────────────────────────────────────────────────────
 async function startServer() {

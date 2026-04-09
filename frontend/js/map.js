@@ -303,8 +303,14 @@ function vehicleIcon(v) {
 // ── vehicle popup ─────────────────────────────────────────────────
 function buildVehiclePopup(v) {
   const delay    = v.arrival_delay || 0;
-  const delayTxt = Math.abs(delay) < 60 ? '✅ On time'
-    : delay > 0 ? `⚠️ +${Math.round(delay/60)} min late` : `🕐 ${Math.round(-delay/60)} min early`;
+  let delayTxt = '✅ On time';
+
+if (delay < PERFORMANCE_THRESHOLDS.EARLY) {
+  delayTxt = `🕐 ${Math.abs(delay)} sec early`;
+}
+else if (delay > PERFORMANCE_THRESHOLDS.LATE) {
+  delayTxt = `🚨 ${Math.round(delay / 60)} min late`;
+}
   const staleTxt = v.is_stale
     ? `<span style="color:#d97706">⚠️ Stale GPS (${v.age_seconds}s old)</span>`
     : '<span style="color:#16a34a">✓ Live GPS</span>';
@@ -576,3 +582,5 @@ window.presenterMapController = {
 window.initMap            = initMap;
 window.refreshMapVehicles = refreshMapVehicles;
 window.syncLayerVisibility = syncLayerVisibility;
+window.getLiveMapVehicleIcon = vehicleIcon;
+

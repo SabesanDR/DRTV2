@@ -313,15 +313,35 @@
 
 <!-- ── PRESENTATION TAB ───────────────────────────────────────── -->
 <section id="tab-presentation" class="tab">
-
-  <h1 id="presentation-title" style="margin:1rem"></h1>
-
-  <div class="map-wrap" style="height:75vh">
+  <h1 id="presentation-title"></h1>
+  <!-- Presentation KPI Overlay -->
+<div id="presentation-kpis" class="presentation-kpis">
+  <div class="kpi">
+    <div class="kpi-label">Active Buses</div>
+    <div class="kpi-value" id="kpi-active">–</div>
+  </div>
+  <div class="kpi kpi-early">
+    <div class="kpi-label">Early</div>
+    <div class="kpi-value" id="kpi-early">–</div>
+  </div>
+  <div class="kpi kpi-ontime">
+    <div class="kpi-label">On‑Time</div>
+    <div class="kpi-value" id="kpi-ontime">–</div>
+  </div>
+  <div class="kpi kpi-late">
+    <div class="kpi-label">Late</div>
+    <div class="kpi-value" id="kpi-late">–</div>
+  </div>
+  <div class="kpi">
+    <div class="kpi-label">On‑Time %</div>
+    <div class="kpi-value" id="kpi-otp">–%</div>
+  </div>
+</div>
+  
+  <div style="height:70vh">
     <div id="presentationMap" style="height:100%"></div>
   </div>
-
 </section>
-
 
   
 
