@@ -8,6 +8,7 @@ window.liveVehicleMarkers = {};
 let _map         = null;
 let _mapInited   = false;
 let _mapInterval = null;
+let _showLateOnly = false;
 
 // Layer groups
 const LG = {
@@ -56,7 +57,11 @@ function initMap() {
     _currentRouteId = e.target.value;
     onRouteChange(_currentRouteId);
   });
-
+  
+  document.getElementById('togLateOnly')?.addEventListener('change', e => {
+  _showLateOnly = e.target.checked;
+  refreshMapVehicles();
+});
   ['togVehicles','togRoutes','togStops','togAlerts','togFlags','togSnapped'].forEach(id => {
     document.getElementById(id)?.addEventListener('change', syncLayerVisibility);
   });
@@ -203,6 +208,15 @@ async function refreshMapVehicles() {
       : '/vehicles';
     const data = await apiFetch(url);
     const vehicles = data.data || [];
+    let visibleVehicles = vehicles;
+
+// 🚨 Late-only filter
+if (_showLateOnly) {
+  visibleVehicles = vehicles.filter(v =>
+    typeof v.delay_seconds === 'number' &&
+    v.delay_seconds > PERFORMANCE_THRESHOLDS.LATE
+  );
+}
 
     window.global_vehicles_cache = vehicles;
 
@@ -210,7 +224,7 @@ async function refreshMapVehicles() {
     window.liveVehicleMarkers = {};
     LG.raw.clearLayers();
 
-    vehicles.forEach(v => {
+    visibleVehicles.forEach(v => {
       if (!v.latitude || !v.longitude) return;
 
       // Trail
@@ -244,13 +258,31 @@ async function refreshMapVehicles() {
     // Update live counts
     const lc = document.getElementById('mapLiveCounts');
     if (lc) {
-      const snapped = vehicles.filter(v => v.snapped).length;
-      const stale   = vehicles.filter(v => v.is_stale).length;
+      const snapped = visibleVehicles.filter(v => v.snapped).length;
+      const stale   = visibleVehicles.filter(v => v.is_stale).length;
       lc.innerHTML =
-        `<b>${vehicles.length}</b> vehicles<br>` +
-        `<span style="color:#16a34a">${snapped} snapped</span> · ` +
-        `<span style="color:#d97706">${stale} stale</span>`;
+        `<b>${visibleVehicles.length}</b> ${_showLateOnly ? 'late' : ''} vehicles<br>` +
+          `<span style="color:#16a34a">${snapped} snapped</span> · ` +
+          `<span style="color:#d97706">${stale} stale</span>`;
+
     }
+        
+const lateVehicles = vehicles.filter(
+  v => typeof v.delay_seconds === 'number' &&
+       v.delay_seconds > PERFORMANCE_THRESHOLDS.LATE
+);
+
+if (lateVehicles.length) {
+  console.log(
+    '🚨 LATE VEHICLES:',
+    lateVehicles.map(v => ({
+      vehicle: v.vehicle_id,
+      route: v.route_id,
+      delay_min: Math.round(v.delay_seconds / 60)
+    }))
+  );
+}
+
       // Re‑apply Presenter Mode filtering after refresh
       if (
         window.presenterMapController &&
@@ -265,7 +297,11 @@ async function refreshMapVehicles() {
 
 // ── vehicle icon ──────────────────────────────────────────────────
 function vehicleIcon(v) {
-  const delay = v.arrival_delay || 0;
+  const delay = typeof v.delay_seconds === 'number'
+    ? v.delay_seconds
+    : 0;
+
+  const isLate = delay > PERFORMANCE_THRESHOLDS.LATE;
   let bg = '#16a34a'; // on‑time
 
   if (delay < PERFORMANCE_THRESHOLDS.EARLY) {
@@ -302,15 +338,20 @@ function vehicleIcon(v) {
 
 // ── vehicle popup ─────────────────────────────────────────────────
 function buildVehiclePopup(v) {
-  const delay    = v.arrival_delay || 0;
+  const delay = typeof v.delay_seconds === 'number'
+  ? v.delay_seconds
+  : null;
+
   let delayTxt = '✅ On time';
 
-if (delay < PERFORMANCE_THRESHOLDS.EARLY) {
-  delayTxt = `🕐 ${Math.abs(delay)} sec early`;
-}
-else if (delay > PERFORMANCE_THRESHOLDS.LATE) {
-  delayTxt = `🚨 ${Math.round(delay / 60)} min late`;
-}
+  if (delay != null) {
+    if (delay < PERFORMANCE_THRESHOLDS.EARLY) {
+      delayTxt = `🟦 ${Math.abs(delay)} sec early`;
+    } 
+    else if (delay > PERFORMANCE_THRESHOLDS.LATE) {
+      delayTxt = `🚨 <b>LATE</b> (${Math.round(delay / 60)} min)`;
+    }
+  }
   const staleTxt = v.is_stale
     ? `<span style="color:#d97706">⚠️ Stale GPS (${v.age_seconds}s old)</span>`
     : '<span style="color:#16a34a">✓ Live GPS</span>';

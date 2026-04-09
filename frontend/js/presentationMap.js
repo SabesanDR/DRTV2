@@ -29,7 +29,9 @@ window.initPresentationMap = function () {
 
 // ✅ Simple, safe vehicle icon (same look as Live Map core)
 function presentationVehicleIcon(v) {
-  const delay = v.arrival_delay || 0;
+  const delay = typeof v.delay_seconds === 'number'
+    ? v.delay_seconds
+    : 0;
 
   let bg = '#16a34a'; // on‑time
   if (delay < -30) bg = '#2563eb';     // early

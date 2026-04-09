@@ -170,6 +170,7 @@
           <label class="toggle-row"><input type="checkbox" id="togAlerts" checked><span>Alerts</span></label>
           <label class="toggle-row"><input type="checkbox" id="togFlags" checked><span>Flagged Stops</span></label>
           <label class="toggle-row"><input type="checkbox" id="togSnapped"><span>Show raw GPS</span></label>
+          <label class="toggle-row"><input type="checkbox" id="togLateOnly"><span>Show late vehicles only</span></label>
         </div>
         <div class="sidebar-section">
           <div class="sidebar-label">Map Legend</div>
@@ -313,36 +314,54 @@
 
 <!-- ── PRESENTATION TAB ───────────────────────────────────────── -->
 <section id="tab-presentation" class="tab">
-  <h1 id="presentation-title"></h1>
-  <!-- Presentation KPI Overlay -->
-<div id="presentation-kpis" class="presentation-kpis">
-  <div class="kpi">
-    <div class="kpi-label">Active Buses</div>
-    <div class="kpi-value" id="kpi-active">–</div>
-  </div>
-  <div class="kpi kpi-early">
-    <div class="kpi-label">Early</div>
-    <div class="kpi-value" id="kpi-early">–</div>
-  </div>
-  <div class="kpi kpi-ontime">
-    <div class="kpi-label">On‑Time</div>
-    <div class="kpi-value" id="kpi-ontime">–</div>
-  </div>
-  <div class="kpi kpi-late">
-    <div class="kpi-label">Late</div>
-    <div class="kpi-value" id="kpi-late">–</div>
-  </div>
-  <div class="kpi">
-    <div class="kpi-label">On‑Time %</div>
-    <div class="kpi-value" id="kpi-otp">–%</div>
-  </div>
-</div>
-  
-  <div style="height:70vh">
-    <div id="presentationMap" style="height:100%"></div>
-  </div>
-</section>
 
+  <div id="presentation-layout">
+
+    <!-- LEFT PANEL: Title, KPIs, Chart -->
+    <div id="presentation-info">
+
+      <h1 id="presentation-title"></h1>
+
+      <!-- KPI Row -->
+      <div id="presentation-kpis" class="presentation-kpis">
+        <div class="kpi">
+          <div class="kpi-label">Active Buses</div>
+          <div class="kpi-value" id="kpi-active">–</div>
+        </div>
+        <div class="kpi kpi-early">
+          <div class="kpi-label">Early</div>
+          <div class="kpi-value" id="kpi-early">–</div>
+        </div>
+        <div class="kpi kpi-ontime">
+          <div class="kpi-label">On‑Time</div>
+          <div class="kpi-value" id="kpi-ontime">–</div>
+        </div>
+        <div class="kpi kpi-late">
+          <div class="kpi-label">Late</div>
+          <div class="kpi-value" id="kpi-late">–</div>
+        </div>
+        <div class="kpi">
+          <div class="kpi-label">On‑Time %</div>
+          <div class="kpi-value" id="kpi-otp">–%</div>
+        </div>
+      </div>
+
+      <!-- Delay Trend Chart -->
+      <div class="presentation-chart">
+        <div class="chart-title">Average Delay (last 90 minutes)</div>
+        <canvas id="delayTrendChart" height="120"></canvas>
+      </div>
+
+    </div>
+
+    <!-- RIGHT PANEL: Map -->
+    <div id="presentation-map-container">
+      <div id="presentationMap"></div>
+    </div>
+
+  </div>
+
+</section>
   
 
 </main>

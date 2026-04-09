@@ -2,45 +2,170 @@
 'use strict';
 console.log("✅ presentation.js loaded");
 
-
 let currentIndex = 0;
 let presentationRunning = false;
 
+// Rolling delay history per municipality
+const delayHistoryByRegion = {};
+const DELAY_BUCKET_MS = 5 * 60 * 1000; // 5‑minute buckets
+const MAX_HISTORY_MS  = 90 * 60 * 1000; // 90 minutes
+
+function recordDelaySample(regionName, vehicles, bounds) {
+  const now = Date.now();
+
+  const localVehicles = vehicles.filter(v =>
+    typeof v.delay_seconds === 'number' &&
+    v.latitude  >= bounds[0][0] &&
+    v.latitude  <= bounds[1][0] &&
+    v.longitude >= bounds[0][1] &&
+    v.longitude <= bounds[1][1]
+  );
+
+  if (!delayHistoryByRegion[regionName]) {
+    delayHistoryByRegion[regionName] = [];
+  }
+
+  if (localVehicles.length === 0) return;
+
+  const avgDelayMin =
+    localVehicles.reduce((sum, v) => sum + v.delay_seconds, 0) /
+    localVehicles.length / 60;
+
+  delayHistoryByRegion[regionName].push({
+    t: now,
+    v: avgDelayMin
+  });
+
+  // Trim old data
+  delayHistoryByRegion[regionName] =
+    delayHistoryByRegion[regionName].filter(
+      p => now - p.t <= MAX_HISTORY_MS
+    );
+}
+/* ===============================================================
+   Bounds safety (prevents Leaflet failures)
+================================================================ */
+function isValidBounds(bounds) {
+  if (!Array.isArray(bounds) || bounds.length !== 2) return false;
+  const [[sLat, sLng], [nLat, nLng]] = bounds;
+  return (
+    typeof sLat === 'number' &&
+    typeof sLng === 'number' &&
+    typeof nLat === 'number' &&
+    typeof nLng === 'number' &&
+    sLat < nLat &&
+    sLng < nLng &&
+    sLat > -90 && nLat < 90 &&
+    sLng > -180 && nLng < 180
+  );
+}
+
+/* ===============================================================
+   Presentation regions (service‑focused, tight)
+   NOTE: staticBounds = fallback when no vehicles are present
+================================================================ */
 const municipalities = [
+  // GTA boundary service
+  {
+    name: "Scarborough",
+    staticBounds: [[43.730, -79.380], [43.820, -79.160]]
+  },
+
   {
     name: "Pickering",
-    bounds: [[43.794, -79.120], [43.865, -78.970]]
+    staticBounds: [[43.800, -79.120], [43.865, -78.985]]
   },
   {
     name: "Ajax",
-    bounds: [[43.810, -79.070], [43.895, -78.925]]
+    staticBounds: [[43.820, -79.070], [43.895, -78.940]]
   },
+
+  // Whitby split
   {
     name: "Whitby",
-    bounds: [[43.845, -78.980], [43.945, -78.890]]
+    staticBounds: [[43.845, -78.960], [43.900, -78.915]]
   },
+  {
+    name: "Brooklin",
+    staticBounds: [[43.900, -78.960], [43.945, -78.905]]
+  },
+
+  // Oshawa / Courtice split
   {
     name: "Oshawa",
-    bounds: [[43.845, -78.930], [43.975, -78.830]]
+    staticBounds: [[43.860, -78.915], [43.915, -78.870]]
   },
   {
-    name: "Clarington",
-    bounds: [[43.885, -78.520], [44.095, -78.300]]
+    name: "Courtice",
+    staticBounds: [[43.900, -78.885], [43.935, -78.800]]
+  },
+
+  // Clarington communities
+  {
+    name: "Bowmanville",
+    staticBounds: [[43.880, -78.720], [43.935, -78.650]]
   },
   {
-    name: "Uxbridge",
-    bounds: [[44.090, -79.160], [44.135, -79.085]]
+    name: "Newcastle",
+    staticBounds: [[43.905, -78.620], [43.940, -78.560]]
   },
   {
-    name: "Scugog",
-    bounds: [[44.095, -79.215], [44.170, -79.115]]
+    
+name: "Orono",
+  staticBounds: [
+    [43.992, -78.637],
+    [44.005, -78.605]
+]
+  },
+
+  // North Durham
+  {
+    name: "Port Perry",
+    staticBounds: [[44.090, -78.960], [44.125, -78.900]]
   },
   {
-    name: "Brock",
-    bounds: [[44.225, -79.415], [44.465, -79.185]]
+    
+ name: "Uxbridge",
+  staticBounds: [
+    [44.090, -79.135],
+    [44.115, -79.080]
+  ]
+
+  },
+  {
+   
+name: "Beaverton",
+  staticBounds: [
+    [44.420, -79.165],
+    [44.445, -79.135]
+  ]
+
+  },
+  {
+   
+  name: "Sunderland",
+  staticBounds: [
+    [44.385, -79.075],
+    [44.410, -79.045]
+  ]
+
+  },
+  {
+    name: "Brock (Rural)",
+    staticBounds: [[44.200, -79.390], [44.340, -79.230]]
   }
 ];
 
+// ✅ Keep only valid regions
+const regions = municipalities.filter(r => {
+  const ok = isValidBounds(r.staticBounds);
+  if (!ok) console.warn('[PRESENTATION] Invalid bounds skipped:', r.name);
+  return ok;
+});
+
+/* ===============================================================
+   Vehicle cache
+================================================================ */
 async function ensureVehicleData() {
   if (window.global_vehicles_cache && window.global_vehicles_cache.length > 0) {
     return window.global_vehicles_cache;
@@ -51,6 +176,31 @@ async function ensureVehicleData() {
   return window.global_vehicles_cache;
 }
 
+/* ===============================================================
+   Compute TRUE focus bounds (vehicles first, fallback second)
+================================================================ */
+function getFocusBoundsForRegion(vehicles, staticBounds) {
+  const matching = vehicles.filter(v =>
+    v.latitude  >= staticBounds[0][0] &&
+    v.latitude  <= staticBounds[1][0] &&
+    v.longitude >= staticBounds[0][1] &&
+    v.longitude <= staticBounds[1][1]
+  );
+
+  // If we have live vehicles, zoom to where service actually exists
+  if (matching.length >= 2) {
+    return L.latLngBounds(
+      matching.map(v => [v.latitude, v.longitude])
+    );
+  }
+
+  // Otherwise fall back to static bounds
+  return staticBounds;
+}
+
+/* ===============================================================
+   Entry point
+================================================================ */
 window.startPresentation = async function () {
   if (presentationRunning) return;
   presentationRunning = true;
@@ -63,64 +213,86 @@ window.startPresentation = async function () {
     window._presentationRoutesLoaded = true;
   }
 
-  showMunicipality();
+  showRegion();
 
   setInterval(() => {
-    currentIndex = (currentIndex + 1) % municipalities.length;
-    showMunicipality();
+    currentIndex = (currentIndex + 1) % regions.length;
+    showRegion();
   }, 25000);
 };
 
+/* ===============================================================
+   Show region (with fade + service‑based zoom)
+================================================================ */
+function showRegion() {
+  const region = regions[currentIndex];
+  if (!region) return;
 
-function showMunicipality() {
-  const m = municipalities[currentIndex];
+  const container = document.getElementById('presentation-content');
+  if (container) container.classList.add('hidden');
 
-  // Update the title
-  document.getElementById("presentation-title").textContent = m.name;
+  setTimeout(() => {
+    document.getElementById("presentation-title").textContent = region.name;
 
-  // ✅ USE ALL VEHICLES — NO FILTERING
-  const vehicles = window.global_vehicles_cache || [];
+    const vehicles = window.global_vehicles_cache || [];
 
-  // ✅ Just move the camera
-  updatePresentationMap(vehicles, m.bounds);
+// ✅ Record one delay sample for this region
+recordDelaySample(
+  region.name,
+  vehicles,
+  region.staticBounds
+);
 
-  
- // ✅ KPI overlay is municipality-specific
-  updateMunicipalityKPIs(m.bounds);
+// ✅ Update chart for this municipality
+updateDelayTrendChart(region.name);
 
+const focusBounds = getFocusBoundsForRegion(
+  vehicles,
+  region.staticBounds
+);
 
+updatePresentationMap(vehicles, focusBounds);
+updateMunicipalityKPIs(region.staticBounds);
+
+    if (container) container.classList.remove('hidden');
+  }, 300);
 }
 
-function classifyDelay(delaySec) {
-  if (delaySec < -30) return 'early';
-  if (delaySec <= 330) return 'ontime';
+/* ===============================================================
+   Delay classification (shared semantics)
+================================================================ */
+function classifyDelayFromVehicle(v) {
+  if (typeof v.delay_seconds !== 'number') return 'unknown';
+  if (v.delay_seconds < -30) return 'early';
+  if (v.delay_seconds <= 330) return 'ontime';
   return 'late';
 }
 
-function updateMunicipalityKPIs(municipalityBounds) {
+/* ===============================================================
+   KPI calculation (vehicles physically inside region)
+================================================================ */
+function updateMunicipalityKPIs(bounds) {
   const vehicles = window.global_vehicles_cache || [];
 
-  // Vehicles physically inside the focus municipality
   const localVehicles = vehicles.filter(v =>
-    v.latitude  >= municipalityBounds[0][0] &&
-    v.latitude  <= municipalityBounds[1][0] &&
-    v.longitude >= municipalityBounds[0][1] &&
-    v.longitude <= municipalityBounds[1][1]
+    v.latitude  >= bounds[0][0] &&
+    v.latitude  <= bounds[1][0] &&
+    v.longitude >= bounds[0][1] &&
+    v.longitude <= bounds[1][1]
   );
 
   let early = 0, ontime = 0, late = 0;
 
   localVehicles.forEach(v => {
-    const status = classifyDelay(v.arrival_delay || 0);
+    const status = classifyDelayFromVehicle(v);
     if (status === 'early') early++;
     else if (status === 'ontime') ontime++;
-    else late++;
+    else if (status === 'late') late++;
   });
 
   const total = localVehicles.length;
-  const otp = total > 0 ? Math.round((ontime / total) * 100) : 0;
+  const otp = total ? Math.round((ontime / total) * 100) : 0;
 
-  // Update DOM
   document.getElementById('kpi-active').textContent = total;
   document.getElementById('kpi-early').textContent = early;
   document.getElementById('kpi-ontime').textContent = ontime;
@@ -128,3 +300,88 @@ function updateMunicipalityKPIs(municipalityBounds) {
   document.getElementById('kpi-otp').textContent = `${otp}%`;
 }
 
+/* ===============================================================
+   Delay Trend Chart (Avg Delay in Minutes)
+================================================================ */
+
+let delayTrendChart = null;
+
+function updateDelayTrendChart(regionName) {
+  const samples = delayHistoryByRegion[regionName] || [];
+  const canvas = document.getElementById('delayTrendChart');
+  if (!canvas) return;
+
+  // Bucket samples into 5‑minute averages
+  const buckets = {};
+  samples.forEach(p => {
+    const bucket =
+      Math.floor(p.t / DELAY_BUCKET_MS) * DELAY_BUCKET_MS;
+    buckets[bucket] ??= [];
+    buckets[bucket].push(p.v);
+  });
+
+  const labels = [];
+  const values = [];
+
+  Object.keys(buckets).sort().forEach(ts => {
+    const avg =
+      buckets[ts].reduce((a, b) => a + b, 0) /
+      buckets[ts].length;
+
+    labels.push(
+      new Date(+ts).toLocaleTimeString([], {
+        hour: '2-digit',
+        minute: '2-digit'
+      })
+    );
+    values.push(+avg.toFixed(1));
+  });
+
+  // Update existing chart
+  if (delayTrendChart) {
+    delayTrendChart.data.labels = labels;
+    delayTrendChart.data.datasets[0].data = values;
+    delayTrendChart.update();
+    return;
+  }
+
+  // Create chart once
+  delayTrendChart = new Chart(canvas, {
+    type: 'line',
+    data: {
+      labels,
+      datasets: [{
+        label: 'Avg Delay (min)',
+        data: values,
+        borderColor: '#16a34a',
+        backgroundColor: 'rgba(22,163,74,.15)',
+        fill: true,
+        tension: 0.35,
+        pointRadius: 3
+      }]
+    },
+    options: {
+      responsive: true,
+      plugins: {
+        legend: { display: false },
+        tooltip: {
+          callbacks: {
+            label: ctx =>
+              `${ctx.raw} min average delay`
+          }
+        }
+      },
+      scales: {
+        y: {
+          beginAtZero: true,
+          ticks: {
+            callback: v => `${v} min`
+          }
+        },
+        x: {
+          ticks: { maxRotation: 0 }
+        }
+      }
+    }
+  });
+}
