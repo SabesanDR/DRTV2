@@ -301,11 +301,11 @@ function updateMunicipalityKPIs(bounds, vehicles) {
   const total = localVehicles.length;
   const otp = total ? Math.round((ontime / total) * 100) : 0;
 
-  document.getElementById('kpi-active').textContent = total;
-  document.getElementById('kpi-early').textContent = early;
-  document.getElementById('kpi-ontime').textContent = ontime;
-  document.getElementById('kpi-late').textContent = late;
-  document.getElementById('kpi-otp').textContent = `${otp}%`;
+  document.getElementById('pres-kpi-active').textContent = total;
+  document.getElementById('pres-kpi-early').textContent = early;
+  document.getElementById('pres-kpi-ontime').textContent = ontime;
+  document.getElementById('pres-kpi-late').textContent = late;
+  document.getElementById('pres-kpi-otp').textContent = `${otp}%`;
 
   // Show late bus detail list
   renderPresentationLateBuses(lateVehicles);
