@@ -166,14 +166,18 @@ const regions = municipalities.filter(r => {
 /* ===============================================================
    Vehicle cache
 ================================================================ */
-async function ensureVehicleData() {
-  if (window.global_vehicles_cache && window.global_vehicles_cache.length > 0) {
+async function ensureVehicleData(forceRefresh = false) {
+  if (!forceRefresh && window.global_vehicles_cache && window.global_vehicles_cache.length > 0) {
     return window.global_vehicles_cache;
   }
-  const res = await fetch('/api/vehicles');
-  const json = await res.json();
-  window.global_vehicles_cache = json.data || [];
-  return window.global_vehicles_cache;
+  try {
+    const res = await fetch('/api/vehicles');
+    const json = await res.json();
+    window.global_vehicles_cache = json.data || [];
+  } catch (e) {
+    console.warn('[PRESENTATION] Failed to refresh vehicle data:', e);
+  }
+  return window.global_vehicles_cache || [];
 }
 
 /* ===============================================================
@@ -224,17 +228,18 @@ window.startPresentation = async function () {
 /* ===============================================================
    Show region (with fade + service‑based zoom)
 ================================================================ */
-function showRegion() {
+async function showRegion() {
   const region = regions[currentIndex];
   if (!region) return;
 
   const container = document.getElementById('presentation-content');
   if (container) container.classList.add('hidden');
 
+  // Always refresh vehicle data each cycle so late/early counts stay current
+  const vehicles = await ensureVehicleData(true);
+
   setTimeout(() => {
     document.getElementById("presentation-title").textContent = region.name;
-
-    const vehicles = window.global_vehicles_cache || [];
 
 // ✅ Record one delay sample for this region
 recordDelaySample(
@@ -251,8 +256,8 @@ const focusBounds = getFocusBoundsForRegion(
   region.staticBounds
 );
 
-updatePresentationMap(vehicles, focusBounds);
-updateMunicipalityKPIs(region.staticBounds);
+updatePresentationMap(vehicles, focusBounds, region.staticBounds);
+updateMunicipalityKPIs(region.staticBounds, vehicles);
 
     if (container) container.classList.remove('hidden');
   }, 300);
@@ -271,10 +276,12 @@ function classifyDelayFromVehicle(v) {
 /* ===============================================================
    KPI calculation (vehicles physically inside region)
 ================================================================ */
-function updateMunicipalityKPIs(bounds) {
-  const vehicles = window.global_vehicles_cache || [];
+function updateMunicipalityKPIs(bounds, vehicles) {
+  // Accept vehicles param directly so we always use fresh data
+  const allVehicles = vehicles || window.global_vehicles_cache || [];
 
-  const localVehicles = vehicles.filter(v =>
+  const localVehicles = allVehicles.filter(v =>
+    typeof v.latitude === 'number' && typeof v.longitude === 'number' &&
     v.latitude  >= bounds[0][0] &&
     v.latitude  <= bounds[1][0] &&
     v.longitude >= bounds[0][1] &&
@@ -282,12 +289,13 @@ function updateMunicipalityKPIs(bounds) {
   );
 
   let early = 0, ontime = 0, late = 0;
+  const lateVehicles = [];
 
   localVehicles.forEach(v => {
     const status = classifyDelayFromVehicle(v);
     if (status === 'early') early++;
     else if (status === 'ontime') ontime++;
-    else if (status === 'late') late++;
+    else if (status === 'late') { late++; lateVehicles.push(v); }
   });
 
   const total = localVehicles.length;
@@ -298,6 +306,49 @@ function updateMunicipalityKPIs(bounds) {
   document.getElementById('kpi-ontime').textContent = ontime;
   document.getElementById('kpi-late').textContent = late;
   document.getElementById('kpi-otp').textContent = `${otp}%`;
+
+  // Show late bus detail list
+  renderPresentationLateBuses(lateVehicles);
+}
+
+/* ===============================================================
+   Late bus detail list for presentation panel
+================================================================ */
+function renderPresentationLateBuses(lateVehicles) {
+  const el = document.getElementById('presentation-late-buses');
+  if (!el) return;
+
+  if (!lateVehicles.length) {
+    el.innerHTML = '<div class="late-none">✅ No late buses in this area</div>';
+    return;
+  }
+
+  // Group by route
+  const byRoute = {};
+  lateVehicles.forEach(v => {
+    const r = v.route_id || 'Unknown';
+    if (!byRoute[r]) byRoute[r] = [];
+    byRoute[r].push(v);
+  });
+
+  el.innerHTML = `
+    <div class="late-buses-title">🚨 Late Buses (${lateVehicles.length})</div>
+    ${Object.entries(byRoute)
+      .sort((a, b) => {
+        const maxA = Math.max(...a[1].map(v => v.delay_seconds));
+        const maxB = Math.max(...b[1].map(v => v.delay_seconds));
+        return maxB - maxA;
+      })
+      .map(([routeId, buses]) => {
+        const maxDelay = Math.max(...buses.map(v => v.delay_seconds));
+        const delayMin = Math.round(maxDelay / 60);
+        return `<div class="pres-late-row">
+          <span class="pres-late-pill">${routeId}</span>
+          <span class="pres-late-detail">${buses.length} bus${buses.length > 1 ? 'es' : ''}</span>
+          <span class="pres-late-delay">+${delayMin} min</span>
+        </div>`;
+      }).join('')}
+  `;
 }
 
 /* ===============================================================

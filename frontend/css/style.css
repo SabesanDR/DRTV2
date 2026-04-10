@@ -688,3 +688,133 @@ canvas {
 [class*="red"] {
   filter: grayscale(1);
 }
+/* ═══════════════════════════════════════════════════════════
+   LATE BUS SUMMARY — Live Map Sidebar
+═══════════════════════════════════════════════════════════ */
+
+.late-bus-panel {
+  border-left: 3px solid #dc2626;
+  background: #fff5f5;
+  border-radius: 6px;
+  padding: 8px 10px !important;
+}
+
+.late-badge {
+  display: inline-block;
+  background: #dc2626;
+  color: #fff;
+  font-size: .7rem;
+  font-weight: 700;
+  border-radius: 10px;
+  padding: 1px 7px;
+  vertical-align: middle;
+}
+
+.late-bus-list {
+  margin-top: 6px;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.late-bus-row {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  cursor: pointer;
+  padding: 3px 4px;
+  border-radius: 4px;
+  transition: background .15s;
+}
+
+.late-bus-row:hover {
+  background: #fee2e2;
+}
+
+.late-route-pill {
+  background: #dc2626;
+  color: #fff;
+  font-size: .65rem;
+  font-weight: 800;
+  border-radius: 8px;
+  padding: 2px 7px;
+  min-width: 32px;
+  text-align: center;
+}
+
+.late-bus-info {
+  font-size: .72rem;
+  color: #374151;
+  flex: 1;
+}
+
+/* ═══════════════════════════════════════════════════════════
+   LATE BUS DETAIL — Presentation Tab
+═══════════════════════════════════════════════════════════ */
+
+.presentation-late-buses {
+  background: #fff;
+  border-radius: 10px;
+  padding: 10px 14px;
+  box-shadow: 0 2px 8px rgba(0,0,0,.1);
+  min-height: 40px;
+}
+
+.late-buses-title {
+  font-size: .75rem;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: .05em;
+  color: #dc2626;
+  margin-bottom: 8px;
+}
+
+.late-none {
+  font-size: .8rem;
+  color: #16a34a;
+  font-weight: 600;
+}
+
+.pres-late-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 4px 0;
+  border-bottom: 1px solid #f1f5f9;
+}
+
+.pres-late-row:last-child {
+  border-bottom: none;
+}
+
+.pres-late-pill {
+  background: #dc2626;
+  color: #fff;
+  font-size: .68rem;
+  font-weight: 800;
+  border-radius: 8px;
+  padding: 2px 8px;
+  min-width: 36px;
+  text-align: center;
+}
+
+.pres-late-detail {
+  font-size: .78rem;
+  color: #374151;
+  flex: 1;
+}
+
+.pres-late-delay {
+  font-size: .78rem;
+  font-weight: 700;
+  color: #dc2626;
+}
+
+/* Fade transition for presentation content */
+#presentation-content {
+  transition: opacity .3s ease;
+}
+
+#presentation-content.hidden {
+  opacity: 0;
+}

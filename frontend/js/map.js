@@ -272,16 +272,8 @@ const lateVehicles = vehicles.filter(
        v.delay_seconds > PERFORMANCE_THRESHOLDS.LATE
 );
 
-if (lateVehicles.length) {
-  console.log(
-    '🚨 LATE VEHICLES:',
-    lateVehicles.map(v => ({
-      vehicle: v.vehicle_id,
-      route: v.route_id,
-      delay_min: Math.round(v.delay_seconds / 60)
-    }))
-  );
-}
+// Update late bus summary panel in sidebar
+renderLateBusSummary(lateVehicles);
 
       // Re‑apply Presenter Mode filtering after refresh
       if (
@@ -306,14 +298,10 @@ function vehicleIcon(v) {
 
   if (delay < PERFORMANCE_THRESHOLDS.EARLY) {
     bg = '#2563eb'; // early (blue)
-  } 
-  else if (delay > PERFORMANCE_THRESHOLDS.LATE) {
+  } else if (delay > PERFORMANCE_THRESHOLDS.LATE) {
     bg = '#dc2626'; // late (red)
-  }
-
-  // Optional: if you want to visually show "minor late" differently
-  else if (delay > PERFORMANCE_THRESHOLDS.ONTIME_HIGH - 150) {
-    bg = '#d97706'; // approaching late (orange)
+  } else if (delay > PERFORMANCE_THRESHOLDS.ONTIME_HIGH - 150) {
+    bg = '#d97706'; // approaching late / minor delay (orange)
   }
 
   // rest of the function stays exactly the same
@@ -618,6 +606,57 @@ window.presenterMapController = {
  * ================================================================
  */
 
+
+// ── late bus summary panel ────────────────────────────────────────
+function renderLateBusSummary(lateVehicles) {
+  const panel = document.getElementById('lateBusSummary');
+  const count = document.getElementById('lateBusCount');
+  if (!panel || !count) return;
+
+  count.textContent = lateVehicles.length;
+
+  if (!lateVehicles.length) {
+    panel.style.display = 'none';
+    return;
+  }
+
+  panel.style.display = '';
+
+  // Group by route
+  const byRoute = {};
+  lateVehicles.forEach(v => {
+    const r = v.route_id || 'Unknown';
+    if (!byRoute[r]) byRoute[r] = [];
+    byRoute[r].push(v);
+  });
+
+  const listEl = document.getElementById('lateBusList');
+  if (!listEl) return;
+
+  listEl.innerHTML = Object.entries(byRoute)
+    .sort((a, b) => {
+      // Sort by worst delay first
+      const maxA = Math.max(...a[1].map(v => v.delay_seconds));
+      const maxB = Math.max(...b[1].map(v => v.delay_seconds));
+      return maxB - maxA;
+    })
+    .map(([routeId, buses]) => {
+      const maxDelay = Math.max(...buses.map(v => v.delay_seconds));
+      const delayMin = Math.round(maxDelay / 60);
+      return `<div class="late-bus-row" onclick="filterToLateRoute('${routeId}')" title="Click to filter to route ${routeId}">
+        <span class="late-route-pill">${routeId}</span>
+        <span class="late-bus-info">${buses.length} bus${buses.length > 1 ? 'es' : ''} · up to +${delayMin} min</span>
+      </div>`;
+    }).join('');
+}
+
+window.filterToLateRoute = function(routeId) {
+  _showLateOnly = true;
+  const tog = document.getElementById('togLateOnly');
+  if (tog) tog.checked = true;
+  const sel = document.getElementById('routeSelect');
+  if (sel) { sel.value = routeId; sel.dispatchEvent(new Event('change')); }
+};
 
 // expose
 window.initMap            = initMap;

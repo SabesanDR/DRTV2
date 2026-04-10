@@ -184,6 +184,16 @@
           <div class="sidebar-label">Live counts</div>
           <div class="live-count" id="mapLiveCounts">–</div>
         </div>
+
+        <!-- Late bus summary panel -->
+        <div class="sidebar-section late-bus-panel" id="lateBusSummary" style="display:none">
+          <div class="sidebar-label" style="color:#dc2626">
+            🚨 Late Buses &nbsp;<span class="late-badge" id="lateBusCount">0</span>
+          </div>
+          <div id="lateBusList" class="late-bus-list"></div>
+          <div class="sidebar-tip" style="margin-top:.4rem">Click a route to filter</div>
+        </div>
+
         <div class="sidebar-tip">💡 Right-click a stop marker to report an issue</div>
       </div>
 
@@ -317,41 +327,46 @@
 
   <div id="presentation-layout">
 
-    <!-- LEFT PANEL: Title, KPIs, Chart -->
+    <!-- LEFT PANEL: Title, KPIs, Late Buses, Chart -->
     <div id="presentation-info">
+      <div id="presentation-content">
 
-      <h1 id="presentation-title"></h1>
+        <h1 id="presentation-title"></h1>
 
-      <!-- KPI Row -->
-      <div id="presentation-kpis" class="presentation-kpis">
-        <div class="kpi">
-          <div class="kpi-label">Active Buses</div>
-          <div class="kpi-value" id="kpi-active">–</div>
+        <!-- KPI Row -->
+        <div id="presentation-kpis" class="presentation-kpis">
+          <div class="kpi">
+            <div class="kpi-label">Active Buses</div>
+            <div class="kpi-value" id="kpi-active">–</div>
+          </div>
+          <div class="kpi kpi-early">
+            <div class="kpi-label">Early</div>
+            <div class="kpi-value" id="kpi-early">–</div>
+          </div>
+          <div class="kpi kpi-ontime">
+            <div class="kpi-label">On&#8209;Time</div>
+            <div class="kpi-value" id="kpi-ontime">–</div>
+          </div>
+          <div class="kpi kpi-late">
+            <div class="kpi-label">Late</div>
+            <div class="kpi-value" id="kpi-late">–</div>
+          </div>
+          <div class="kpi">
+            <div class="kpi-label">On&#8209;Time %</div>
+            <div class="kpi-value" id="kpi-otp">–%</div>
+          </div>
         </div>
-        <div class="kpi kpi-early">
-          <div class="kpi-label">Early</div>
-          <div class="kpi-value" id="kpi-early">–</div>
+
+        <!-- Late Bus Detail List -->
+        <div id="presentation-late-buses" class="presentation-late-buses"></div>
+
+        <!-- Delay Trend Chart -->
+        <div class="presentation-chart">
+          <div class="chart-title">Average Delay (last 90 minutes)</div>
+          <canvas id="delayTrendChart" height="120"></canvas>
         </div>
-        <div class="kpi kpi-ontime">
-          <div class="kpi-label">On‑Time</div>
-          <div class="kpi-value" id="kpi-ontime">–</div>
-        </div>
-        <div class="kpi kpi-late">
-          <div class="kpi-label">Late</div>
-          <div class="kpi-value" id="kpi-late">–</div>
-        </div>
-        <div class="kpi">
-          <div class="kpi-label">On‑Time %</div>
-          <div class="kpi-value" id="kpi-otp">–%</div>
-        </div>
+
       </div>
-
-      <!-- Delay Trend Chart -->
-      <div class="presentation-chart">
-        <div class="chart-title">Average Delay (last 90 minutes)</div>
-        <canvas id="delayTrendChart" height="120"></canvas>
-      </div>
-
     </div>
 
     <!-- RIGHT PANEL: Map -->

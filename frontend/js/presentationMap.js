@@ -61,10 +61,10 @@ function presentationVehicleIcon(v) {
   });
 }
 
-window.updatePresentationMap = function (vehicles, bounds) {
+window.updatePresentationMap = function (vehicles, focusBounds, staticBounds) {
   if (!presentationMap || !vehiclesLayer) return;
 
-  presentationMap.fitBounds(bounds, {
+  presentationMap.fitBounds(focusBounds, {
     padding: [60, 60],
     maxZoom: 14,
     animate: true
@@ -72,13 +72,43 @@ window.updatePresentationMap = function (vehicles, bounds) {
 
   vehiclesLayer.clearLayers();
 
-  vehicles.forEach(v => {
+  // Only render vehicles inside the region's static bounds
+  const regionVehicles = staticBounds
+    ? vehicles.filter(v =>
+        typeof v.latitude === 'number' && typeof v.longitude === 'number' &&
+        v.latitude  >= staticBounds[0][0] &&
+        v.latitude  <= staticBounds[1][0] &&
+        v.longitude >= staticBounds[0][1] &&
+        v.longitude <= staticBounds[1][1]
+      )
+    : vehicles;
+
+  regionVehicles.forEach(v => {
     if (!v.latitude || !v.longitude) return;
 
-    L.marker(
+    const marker = L.marker(
       [v.latitude, v.longitude],
       { icon: presentationVehicleIcon(v) }
-    ).addTo(vehiclesLayer);
+    );
+
+    // Build a popup with route + delay info
+    const delay = typeof v.delay_seconds === 'number' ? v.delay_seconds : null;
+    let delayTxt = '✅ On time';
+    if (delay !== null) {
+      if (delay < -30) delayTxt = `🟦 ${Math.abs(Math.round(delay / 60))} min early`;
+      else if (delay > 330) delayTxt = `🚨 <b>+${Math.round(delay / 60)} min late</b>`;
+    }
+
+    marker.bindPopup(`
+      <div style="min-width:150px;font-size:.82rem;line-height:1.6">
+        <strong>🚌 Route ${v.route_id || '–'}</strong><br>
+        Vehicle: ${v.vehicle_id || '–'}<br>
+        ${delayTxt}<br>
+        <small style="color:#94a3b8">Updated: ${v.timestamp ? new Date(v.timestamp * 1000).toLocaleTimeString() : '–'}</small>
+      </div>
+    `);
+
+    marker.addTo(vehiclesLayer);
   });
 };
 
