@@ -40,6 +40,7 @@
   <button class="nav-btn" data-tab="map">Live Map</button>
   <button class="nav-btn" data-tab="analytics">Analytics</button>
   <button class="nav-btn" data-tab="reports">Reports</button>
+  <button class="nav-btn" data-tab="export">Export</button>
   <button class="nav-btn" data-tab="admin">Admin</button>
   <button class="nav-btn" data-tab="presentation">Presentation</button>
 </nav>
@@ -288,6 +289,13 @@
     </div>
   </section>
 
+  <!-- ── EXPORT TAB ───────────────────────────────────────────── -->
+  <section id="tab-export" class="tab">
+    <div style="padding:24px;">
+      <div id="export-panel-container"></div>
+    </div>
+  </section>
+
   <!-- ── ADMIN TAB ─────────────────────────────────────────────── -->
   <section id="tab-admin" class="tab">
     <div class="admin-wrap">
@@ -435,5 +443,16 @@
 <script src="js/app.js"></script>
 <script src="js/analytics.js"></script>
 <script src="js/admin.js"></script>
+<script src="js/export.js"></script>
+<script>
+  // Initialise export panel the first time the Export tab is clicked
+  document.querySelectorAll('.nav-btn[data-tab="export"]').forEach(function(btn) {
+    btn.addEventListener('click', function() {
+      if (!document.getElementById('export-panel-container').hasChildNodes()) {
+        window.initExportPanel('export-panel-container');
+      }
+    });
+  });
+</script>
 </body>
 </html>

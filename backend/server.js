@@ -27,6 +27,8 @@ const shapesRoutes     = require('./routes/shapes');
 const stopsRoutes      = require('./routes/stops');
 const routesRoutes     = require('./routes/routesApi');
 const analyticsRoutes  = require('./routes/analytics');
+const exportRoutes     = require('./routes/export');
+const historyStore     = require('./historyStore');
 
 const app  = express();
 const PORT = process.env.PORT || 3000;
@@ -377,6 +379,8 @@ async function fetchVehiclePositions() {
                                lat: v.latitude, lon: v.longitude, ts: now })),
     ];
 
+    // Persist full vehicle snapshots for CSV export
+    historyStore.recordVehicles(vehicles);
     console.log(`Vehicles: ${vehicles.length} (${vehicles.filter(v => v.snapped).length} snapped)`);
   } catch (err) {
     console.warn('Vehicle positions error:', err.message);
@@ -559,6 +563,8 @@ console.log(
         ts: now 
       })),
     ];
+    // Persist trip-delay + stop-performance snapshots for CSV export
+    historyStore.recordTripUpdates(updates, db.store);
   } catch (err) {
     console.warn('Trip updates error:', err.message);
   }
@@ -617,6 +623,7 @@ app.use('/api/shapes',       shapesRoutes);
 app.use('/api/stops',        stopsRoutes);
 app.use('/api/routes',       routesRoutes);
 app.use('/api/analytics',    analyticsRoutes);
+app.use('/api/export',       exportRoutes);
 
 // ── health ───────────────────────────────────────────────────────
 app.get('/api/health', (_req, res) => {
