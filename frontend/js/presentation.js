@@ -264,13 +264,22 @@ updateMunicipalityKPIs(region.staticBounds, vehicles);
 }
 
 /* ===============================================================
-   Delay classification (shared semantics)
+   Delay classification — uses ontimeEngine result from server
+   performance_status values: 'on_time' | 'early' | 'late' | 'unknown'
+   (ontimeEngine uses 'on_time' with underscore; map to local 'ontime')
 ================================================================ */
 function classifyDelayFromVehicle(v) {
-  if (typeof v.delay_seconds !== 'number') return 'unknown';
-  if (v.delay_seconds < -30) return 'early';
-  if (v.delay_seconds <= 330) return 'ontime';
-  return 'late';
+  const s = v.performance_status;
+  if (s === 'on_time') return 'ontime';
+  if (s === 'early')   return 'early';
+  if (s === 'late')    return 'late';
+  // Fallback: if status missing, derive from delay_seconds if present
+  if (typeof v.delay_seconds === 'number') {
+    if (v.delay_seconds < -29)  return 'early';
+    if (v.delay_seconds <= 329) return 'ontime';
+    return 'late';
+  }
+  return 'unknown';
 }
 
 /* ===============================================================
@@ -342,9 +351,12 @@ function renderPresentationLateBuses(lateVehicles) {
       .map(([routeId, buses]) => {
         const maxDelay = Math.max(...buses.map(v => v.delay_seconds));
         const delayMin = Math.round(maxDelay / 60);
+        const stopHint = buses[0]?.matched_stop_name
+          ? `<span class="pres-late-stop" style="font-size:.65rem;color:#64748b;display:block;">near ${buses[0].matched_stop_name}</span>`
+          : '';
         return `<div class="pres-late-row">
           <span class="pres-late-pill">${routeId}</span>
-          <span class="pres-late-detail">${buses.length} bus${buses.length > 1 ? 'es' : ''}</span>
+          <span class="pres-late-detail">${buses.length} bus${buses.length > 1 ? 'es' : ''}${stopHint}</span>
           <span class="pres-late-delay">+${delayMin} min</span>
         </div>`;
       }).join('')}

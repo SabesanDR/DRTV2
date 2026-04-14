@@ -289,27 +289,29 @@ renderLateBusSummary(lateVehicles);
 
 // ── vehicle icon ──────────────────────────────────────────────────
 function vehicleIcon(v) {
-  const delay = typeof v.delay_seconds === 'number'
-    ? v.delay_seconds
-    : 0;
+  // Use performance_status (set by ontimeEngine) as primary signal.
+  // Fall back to delay_seconds arithmetic only if status is unknown.
+  const status = v.performance_status || 'unknown';
+  const delay  = typeof v.delay_seconds === 'number' ? v.delay_seconds : null;
 
-  const isLate = delay > PERFORMANCE_THRESHOLDS.LATE;
-  let bg = '#16a34a'; // on‑time
+  let bg = '#16a34a'; // on_time (DRT green)
 
-  if (delay < PERFORMANCE_THRESHOLDS.EARLY) {
-    bg = '#2563eb'; // early (blue)
-  } else if (delay > PERFORMANCE_THRESHOLDS.LATE) {
-    bg = '#dc2626'; // late (red)
-  } else if (delay > PERFORMANCE_THRESHOLDS.ONTIME_HIGH - 150) {
-    bg = '#d97706'; // approaching late / minor delay (orange)
+  if (status === 'early') {
+    bg = '#2563eb';                          // blue — running early
+  } else if (status === 'late') {
+    bg = '#dc2626';                          // red — running late
+  } else if (status === 'unknown') {
+    bg = '#64748b';                          // grey — no data yet
+  } else if (status === 'on_time' && delay !== null && delay > 180) {
+    bg = '#d97706';                          // amber — on-time but approaching late
   }
+  // else: on_time → DRT green
 
-  // rest of the function stays exactly the same
-  const size   = 28;
-  const stale  = v.is_stale;
-  const border = stale ? '#94a3b8' : '#ffffff';
+  const size    = 28;
+  const stale   = v.is_stale;
+  const border  = stale ? '#94a3b8' : '#ffffff';
   const opacity = stale ? 0.55 : 1;
-  const label  = v.route_id || '?';
+  const label   = v.route_id || '?';
 
   return L.divIcon({
     html: `<div class="v-icon ${stale ? 'v-icon--stale' : ''}"
@@ -326,40 +328,63 @@ function vehicleIcon(v) {
 
 // ── vehicle popup ─────────────────────────────────────────────────
 function buildVehiclePopup(v) {
-  const delay = typeof v.delay_seconds === 'number'
-  ? v.delay_seconds
-  : null;
+  const status = v.performance_status || 'unknown';
+  const delay  = typeof v.delay_seconds === 'number' ? v.delay_seconds : null;
 
-  let delayTxt = '✅ On time';
+  // ── Status line ───────────────────────────────────────────────
+  let statusColour = '#16a34a';
+  let statusIcon   = '🟢';
+  let statusLabel  = 'On time';
 
-  if (delay != null) {
-    if (delay < PERFORMANCE_THRESHOLDS.EARLY) {
-      delayTxt = `🟦 ${Math.abs(delay)} sec early`;
-    } 
-    else if (delay > PERFORMANCE_THRESHOLDS.LATE) {
-      delayTxt = `🚨 <b>LATE</b> (${Math.round(delay / 60)} min)`;
-    }
+  if (status === 'late') {
+    statusColour = '#dc2626'; statusIcon = '🔴';
+    statusLabel  = delay !== null
+      ? `Late — <b>+${Math.round(delay / 60)} min ${Math.abs(delay % 60)}s</b>`
+      : 'Late';
+  } else if (status === 'early') {
+    statusColour = '#2563eb'; statusIcon = '🔵';
+    statusLabel  = delay !== null
+      ? `Early — <b>${Math.abs(Math.round(delay / 60))} min ${Math.abs(delay % 60)}s ahead</b>`
+      : 'Running early';
+  } else if (status === 'on_time') {
+    const secs = delay !== null ? ` (${delay > 0 ? '+' : ''}${delay}s)` : '';
+    statusLabel = `On time${secs}`;
+  } else {
+    statusColour = '#64748b'; statusIcon = '⚪';
+    statusLabel  = 'Status unknown — not yet near a stop';
   }
+
+  // ── Stop context ──────────────────────────────────────────────
+  const stopLine = v.matched_stop_name
+    ? (v.between_stops
+        ? `<br><small style="color:#64748b">Last stop: ${v.matched_stop_name} (${v.matched_stop_dist_m}m away)</small>`
+        : `<br><small style="color:#475569">📍 At stop: <b>${v.matched_stop_name}</b> (${v.matched_stop_dist_m}m)</small>`)
+    : '';
+
   const staleTxt = v.is_stale
     ? `<span style="color:#d97706">⚠️ Stale GPS (${v.age_seconds}s old)</span>`
     : '<span style="color:#16a34a">✓ Live GPS</span>';
   const snapTxt  = v.snapped
-    ? `<span style="color:#2563eb">📍 Snapped (${v.snap_distance_m}m)</span>`
-    : v.snap_distance_m ? `<span style="color:#64748b">Raw GPS (${v.snap_distance_m}m off-route)</span>` : '';
+    ? `<span style="color:#2563eb">📍 Shape-snapped (${v.snap_distance_m}m)</span>`
+    : v.snap_distance_m
+      ? `<span style="color:#64748b">Raw GPS (${v.snap_distance_m}m off-route)</span>`
+      : '';
   const teleport = v.teleport_flagged
-    ? `<br><span style="color:#dc2626">🚨 Jump detected (${v.implied_speed_kmh} km/h implied)</span>` : '';
+    ? `<br><span style="color:#dc2626">🚨 Position jump (${v.implied_speed_kmh} km/h implied)</span>`
+    : '';
 
-  return `<div style="min-width:190px;font-size:.8rem;line-height:1.6">
+  return `<div style="min-width:200px;font-size:.8rem;line-height:1.65">
     <strong style="font-size:.9rem">🚌 Vehicle ${v.vehicle_id}</strong>
     <br>Route: <b>${v.route_id || '–'}</b>
-    ${v.trip_id ? `<br>Trip: ${v.trip_id}` : ''}
-    <br>${delayTxt}
+    ${v.trip_id ? `<br>Trip: <span style="color:#64748b">${v.trip_id}</span>` : ''}
+    <br><span style="color:${statusColour}">${statusIcon} ${statusLabel}</span>
+    ${stopLine}
     ${v.speed != null ? `<br>Speed: ${v.speed} km/h` : ''}
     ${v.bearing ? `<br>Heading: ${Math.round(v.bearing)}°` : ''}
     <br>${staleTxt}
     ${snapTxt ? '<br>' + snapTxt : ''}
     ${teleport}
-    <br><small style="color:#94a3b8">Updated: ${v.timestamp ? new Date(v.timestamp*1000).toLocaleTimeString() : '–'}</small>
+    <br><small style="color:#94a3b8">GPS fix: ${v.timestamp ? new Date(v.timestamp * 1000).toLocaleTimeString() : '–'}</small>
   </div>`;
 }
 
