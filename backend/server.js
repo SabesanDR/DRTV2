@@ -95,6 +95,33 @@ function haversine(lat1, lon1, lat2, lon2) {
   const a = Math.sin(df/2)**2 + Math.cos(f1)*Math.cos(f2)*Math.sin(dl/2)**2;
   return R * 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1-a));
 }
+// ── find closest stop sequence for a vehicle's trip (for on-time evaluation) ──
+function closestStopSequence(vehicle, store) {
+  const stopTimes = store.stopTimesByTrip?.[vehicle.trip_id];
+  if (!stopTimes) return null;
+
+  let bestSeq = null;
+  let bestDist = Infinity;
+
+  for (const st of stopTimes) {
+    const stop = store.stopsById[st.stop_id];
+    if (!stop) continue;
+
+    const d = haversine(
+      vehicle.latitude,
+      vehicle.longitude,
+      stop.stop_lat,
+      stop.stop_lon
+    );
+
+    if (d < bestDist) {
+      bestDist = d;
+      bestSeq = st.stop_sequence;
+    }
+  }
+
+  return bestSeq;
+}
 
 
 // ── snap GPS point to nearest shape polyline ────────────────────
@@ -295,6 +322,7 @@ function enrichVehicle(v) {
 // ── vehicle deduplication / teleport filter ──────────────────────
 const prevPositions = {};  // vehicle_id → {lat, lon, ts}
 const MAX_SPEED_MPS = 40;  // ~144 km/h — flag if exceeded
+const prevVehicleState = {}; // vehicle_id → previous enriched vehicle (for performance status comparison)
 
 function filterTeleport(vehicle) {
   const id  = vehicle.vehicle_id;
@@ -372,10 +400,51 @@ async function fetchVehiclePositions() {
       vehicle = filterTeleport(vehicle);
       vehicles.push(enrichVehicle(vehicle));
     }
+    // ── Arrival detection via stop-sequence crossing (Google-style) ──
+for (const v of vehicles) {
+  if (!v.trip_id || !v.timestamp) continue;
 
-    // ✅ Compute on-time status: GPS position → nearest static stop →
-    //    vehicle timestamp vs scheduled arrival_time
-    ontimeEngine.evaluateAll(vehicles, db.store);
+  // determine current closest stop sequence
+  const currSeq = closestStopSequence(v, db.store);
+  if (currSeq == null) continue;
+
+  const prevState = prevVehicleState[v.vehicle_id];
+  const prevSeq = prevState?.stop_sequence;
+
+  // detect forward crossing (arrival event)
+  if (
+    prevSeq != null &&
+    currSeq > prevSeq &&
+    (v.last_served_stop_sequence == null || v.last_served_stop_sequence < currSeq)
+  ) {
+    const stopTimes = db.store.stopTimesByTrip?.[v.trip_id];
+    const stopTime = stopTimes?.find(s => s.stop_sequence === currSeq);
+
+    if (stopTime && stopTime.arrival_time_sec != null) {
+      const scheduledUnix =
+        db.store.serviceDateMidnight + stopTime.arrival_time_sec;
+
+      const deltaSec = v.timestamp - scheduledUnix;
+
+      // classify
+      if (deltaSec > 120) v.performance_status = 'late';
+      else if (deltaSec < -60) v.performance_status = 'early';
+      else v.performance_status = 'on_time';
+
+      v.delay_seconds = deltaSec;
+      v.matched_stop_id = stopTime.stop_id;
+      v.at_stop_sequence = currSeq;
+      v.between_stops = false;
+      v.last_served_stop_sequence = currSeq;
+    }
+  }
+
+  // update previous state
+  prevVehicleState[v.vehicle_id] = {
+    stop_sequence: currSeq,
+    timestamp: v.timestamp
+  };
+}
 
     global.cache.vehicles    = vehicles;
     global.cache.lastUpdated.vehicles = new Date().toISOString();
@@ -516,7 +585,7 @@ const delayStats = {
 };
 
 
-    // ── Console on‑time metrics (STATIC GTFS JOIN — SAME AS ANALYTICS) ──
+// ── Console on‑time metrics (STATIC GTFS JOIN — SAME AS ANALYTICS) ──
 let late = 0;
 let early = 0;
 let onTime = 0;
@@ -740,7 +809,6 @@ async function startServer() {
       fetchTripUpdates(),
       fetchAlerts(),
     ]);
-      applyTripUpdateDelaysToVehicles();
 
     // Refresh every 30 seconds
     cron.schedule('*/30 * * * * *', async () => {
@@ -749,7 +817,6 @@ async function startServer() {
         fetchTripUpdates(),
         fetchAlerts(),
       ]);
-      applyTripUpdateDelaysToVehicles();
 
     });
 
