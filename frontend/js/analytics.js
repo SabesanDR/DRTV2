@@ -146,7 +146,7 @@ async function renderHeadwayChart() {
     buildChart('chartHeadway', 'bar', {
       labels: rows.map(r => r.route_short_name || r.route_id),
       datasets: [{
-        label: 'Avg Headway (min)',
+        label: 'Avg Headway (Km)',
         data:  rows.map(r => r.avg_headway_min),
         backgroundColor: rows.map(r =>
           r.headway_regularity > 80 ? '#16a34a' :
@@ -161,14 +161,14 @@ async function renderHeadwayChart() {
           callbacks: {
             label: ctx => {
               const r = rows[ctx.dataIndex];
-              return [`Avg: ${r.avg_headway_min} min`,
+              return [`Avg: ${r.avg_headway_min} km`,
                       `Regularity: ${r.headway_regularity ?? '–'}%`];
             },
           },
         },
       },
       scales: {
-        x: { ticks: { callback: v => v + 'm' } },
+        x: { ticks: { callback: v => v + 'km' } },
         y: { ticks: { font: { size: 9 } } },
       },
     });

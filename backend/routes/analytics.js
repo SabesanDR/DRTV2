@@ -30,6 +30,22 @@ function stdDev(arr) {
   return Math.sqrt(arr.reduce((s, v) => s + (v - m) ** 2, 0) / arr.length);
 }
 
+// ── Haversine distance (meters) ─────────────────────────────────
+function haversine(lat1, lon1, lat2, lon2) {
+  const R = 6_371_000; // Earth radius in meters
+
+  const f1 = lat1 * Math.PI / 180;
+  const f2 = lat2 * Math.PI / 180;
+  const df = (lat2 - lat1) * Math.PI / 180;
+  const dl = (lon2 - lon1) * Math.PI / 180;
+
+  const a =
+    Math.sin(df / 2) ** 2 +
+    Math.cos(f1) * Math.cos(f2) * Math.sin(dl / 2) ** 2;
+
+  return R * 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1 - a));
+}
+
 /* ───────────────────────────────────────────────────────────────
    GTFS static ↔ RT time helpers
 ─────────────────────────────────────────────────────────────── */
@@ -81,7 +97,7 @@ router.get('/overview', (_req, res) => {
 
     const rtStop = u.stop_updates[0];
     const actualUnix = rtStop.arrival_time;
-    if (!actualUnix) continue;
+    if (actualUnix === null || actualUnix === undefined) continue;
 
     let staticStop = stopTimes.find(
       s => s.stop_sequence === rtStop.stop_sequence
@@ -236,7 +252,7 @@ router.get('/on-time', (_req, res) => {
 const rtStop = u.stop_updates[0];
 
 const actualUnix = rtStop.arrival_time;
-if (!actualUnix) continue;
+if (actualUnix === null || actualUnix === undefined) continue;
 
 // Match by stop_sequence
 let staticStop = stopTimes.find(
@@ -316,7 +332,7 @@ router.get('/on-time/debug', (_req, res) => {
 
     const rtStop = u.stop_updates[0];
 const actualUnix = rtStop.arrival_time;
-if (!actualUnix) continue;
+  if (actualUnix === null || actualUnix === undefined) continue;
 
 // Match by stop_sequence
 let staticStop = stopTimes.find(
@@ -379,38 +395,85 @@ router.get('/headway', (_req, res) => {
 
   const byRoute = {};
 
+  // 1️⃣ Group active vehicles by route
   for (const v of vehicles) {
-    if (!v.route_id || !v.timestamp) continue;
-    if (!byRoute[v.route_id]) byRoute[v.route_id] = [];
-    byRoute[v.route_id].push(v.timestamp);
-  }
+    if (!v.route_id || v.is_stale) continue;
+    if (v.latitude == null || v.longitude == null) continue;
 
-  const rows = Object.entries(byRoute).map(([routeId, ts]) => {
-    const sorted = [...ts].sort((a, b) => a - b);
-    const gaps = [];
-
-    for (let i = 1; i < sorted.length; i++) {
-      const gap = (sorted[i] - sorted[i - 1]) / 60;
-      if (gap > 0 && gap < 120) gaps.push(gap);
+    if (!byRoute[v.route_id]) {
+      byRoute[v.route_id] = [];
     }
 
-    const route = store.routesById[routeId];
+    byRoute[v.route_id].push(v);
+  }
 
-    return {
-      route_id: routeId,
-      route_short_name: route?.route_short_name || routeId,
-      vehicle_count: ts.length,
-      avg_headway_min: gaps.length ? Math.round(avg(gaps) * 10) / 10 : null,
-      min_headway_min: gaps.length ? Math.round(Math.min(...gaps) * 10) / 10 : null,
-      max_headway_min: gaps.length ? Math.round(Math.max(...gaps) * 10) / 10 : null,
-      headway_regularity:
-        gaps.length >= 2
-          ? Math.max(0, 100 - Math.round((stdDev(gaps) / (avg(gaps) || 1)) * 100))
-          : null
-    };
-  });
+  const rows = [];
 
-  rows.sort((a, b) => (b.vehicle_count || 0) - (a.vehicle_count || 0));
+  // 2️⃣ Compute spacing per route
+  for (const [routeId, routeVehicles] of Object.entries(byRoute)) {
+    if (routeVehicles.length < 2) continue;
+
+    // Prefer most active routes
+    const vehicleCount = routeVehicles.length;
+
+    // Sort vehicles in a consistent order
+    routeVehicles.sort((a, b) =>
+      (a.timestamp || 0) - (b.timestamp || 0)
+    );
+
+    const distances = [];
+
+    for (let i = 1; i < routeVehicles.length; i++) {
+      const v1 = routeVehicles[i - 1];
+      const v2 = routeVehicles[i];
+
+      const d = haversine(
+        v1.latitude,
+        v1.longitude,
+        v2.latitude,
+        v2.longitude
+      );
+
+      if (d > 0 && d < 20_000) { // sanity filter (20 km)
+        distances.push(d);
+      }
+    }
+
+    // convert spacing from meters to kilometers
+    const distancesKm = distances.map(m => m / 1000);
+
+    if (!distances.length) continue;
+
+const avgKm =
+  distancesKm.reduce((a, b) => a + b, 0) / distancesKm.length;
+
+const minKm = Math.min(...distancesKm);
+const maxKm = Math.max(...distancesKm);
+const route = store.routesById[routeId];
+rows.push({
+  route_id: routeId,
+  route_short_name: route?.route_short_name || routeId,
+  route_color: route?.route_color || '2E7D32',
+
+  vehicle_count: vehicleCount,
+
+  // ✅ spacing in KILOMETERS ONLY
+  avg_spacing_km: Math.round(avgKm * 100) / 100,
+  min_spacing_km: Math.round(minKm * 100) / 100,
+  max_spacing_km: Math.round(maxKm * 100) / 100,
+
+  // ✅ frontend compatibility (Vehicle Spacing Consistency chart)
+  avg_headway_min: Math.round(avgKm * 100) / 100,
+  min_headway_min: Math.round(minKm * 100) / 100,
+  max_headway_min: Math.round(maxKm * 100) / 100
+});
+  }
+
+  // 3️⃣ Sort to prioritize routes with most buses
+  rows.sort((a, b) =>
+    b.vehicle_count - a.vehicle_count
+  );
+
   res.json({ by_route: rows });
 });
 

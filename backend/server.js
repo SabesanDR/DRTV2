@@ -60,6 +60,16 @@ const { store } = require('./db'); // adjust path if needed
 const EARLY_THRESHOLD_SEC = -29;
 const LATE_THRESHOLD_SEC  = 5 * 60 + 29; // 329 seconds
 
+// ── Normalize GTFS-RT trip_id to static GTFS trip_id ──
+// Example:
+//   RT: 5608__201026_Timetable_-_2026-04
+//   Static: 5608
+function normalizeTripId(rtTripId) {
+  if (!rtTripId) return rtTripId;
+  return rtTripId.split('__')[0];
+}
+
+
 function classifyArrivalBySeconds(deltaSec) {
   if (deltaSec > LATE_THRESHOLD_SEC) return 'late';
   if (deltaSec < EARLY_THRESHOLD_SEC) return 'early';
@@ -268,7 +278,7 @@ function decodeProtobuf(buffer) {
 }
 
 // ── staleness check ──────────────────────────────────────────────
-const STALE_MS = 90_000; // 90 seconds
+const STALE_MS = 7 * 60_000; // 7 minutes (realistic for DRT feed timing)
 
 function enrichVehicle(v) {
   const now = Date.now();
@@ -321,7 +331,8 @@ async function fetchVehiclePositions() {
       const vp = entity.vehicle;
       if (!vp || !vp.position) continue;
 
-      const tripId   = vp.trip?.trip_id  || '';
+      const rawTripId = vp.trip?.trip_id || '';
+      const tripId = normalizeTripId(rawTripId);
       const routeId  = vp.trip?.route_id || db.store.tripToRoute[tripId] || '';
       const vehicleId = vp.vehicle?.id || entity.id || '';
       const lat      = vp.position.latitude;
@@ -398,7 +409,8 @@ async function fetchTripUpdates() {
     for (const entity of feed.entity) {
       const tu = entity.trip_update;
       if (!tu) continue;
-      const tripId  = tu.trip?.trip_id  || '';
+      const rawTripId = tu.trip?.trip_id || '';
+      const tripId = normalizeTripId(rawTripId);
       const routeId = tu.trip?.route_id || db.store.tripToRoute[tripId] || '';
       const ts      = Number(tu.timestamp) || Math.floor(Date.now() / 1000);
 
@@ -679,6 +691,42 @@ function buildTripDelayMapFromCache(tripUpdates) {
   return tripDelayMap;
 }
 
+// ── Apply TripUpdate delays to vehicles (authoritative source) ──
+// Vehicles + analytics expect:
+//   v.delay_seconds
+//   v.performance_status
+function applyTripUpdateDelaysToVehicles() {
+  const delayMap = new Map();
+
+  for (const u of global.cache.tripUpdates) {
+    if (!u.trip_id) continue;
+
+    let d = null;
+
+    // Prefer GPS-derived delay if available, else RT delay
+    if (typeof u.derived_arrival_delay === 'number') {
+      d = u.derived_arrival_delay;
+    } else if (typeof u.arrival_delay === 'number') {
+      d = u.arrival_delay;
+    }
+
+    if (d !== null) {
+      delayMap.set(u.trip_id, {
+        delay_seconds: d,
+        performance_status: u.status === 'on-time' ? 'on_time' : u.status,
+      });
+    }
+  }
+
+  for (const v of global.cache.vehicles) {
+    const info = delayMap.get(v.trip_id);
+    if (info) {
+      v.delay_seconds = info.delay_seconds;
+      v.performance_status = info.performance_status;
+    }
+  }
+}
+
 
 // ── startup ──────────────────────────────────────────────────────
 async function startServer() {
@@ -692,6 +740,7 @@ async function startServer() {
       fetchTripUpdates(),
       fetchAlerts(),
     ]);
+      applyTripUpdateDelaysToVehicles();
 
     // Refresh every 30 seconds
     cron.schedule('*/30 * * * * *', async () => {
@@ -700,6 +749,8 @@ async function startServer() {
         fetchTripUpdates(),
         fetchAlerts(),
       ]);
+      applyTripUpdateDelaysToVehicles();
+
     });
 
     app.listen(PORT, () => {
