@@ -688,4 +688,3 @@ window.initMap            = initMap;
 window.refreshMapVehicles = refreshMapVehicles;
 window.syncLayerVisibility = syncLayerVisibility;
 window.getLiveMapVehicleIcon = vehicleIcon;
-
