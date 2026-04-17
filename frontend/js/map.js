@@ -335,51 +335,100 @@ function buildVehiclePopup(v) {
 
   if (status === 'late') {
     statusColour = '#dc2626'; statusIcon = '🔴';
-    statusLabel  = delay !== null
-      ? `Late — <b>+${Math.round(delay / 60)} min ${Math.abs(delay % 60)}s</b>`
-      : 'Late';
+    if (delay !== null) {
+      const m = Math.floor(Math.abs(delay) / 60);
+      const s = Math.abs(delay) % 60;
+      statusLabel = m > 0
+        ? `Late — <b>+${m} min ${s}s</b>`
+        : `Late — <b>+${s}s</b>`;
+    } else {
+      statusLabel = 'Late';
+    }
   } else if (status === 'early') {
     statusColour = '#2563eb'; statusIcon = '🔵';
-    statusLabel  = delay !== null
-      ? `Early — <b>${Math.abs(Math.round(delay / 60))} min ${Math.abs(delay % 60)}s ahead</b>`
-      : 'Running early';
+    if (delay !== null) {
+      const m = Math.floor(Math.abs(delay) / 60);
+      const s = Math.abs(delay) % 60;
+      statusLabel = m > 0
+        ? `Early — <b>${m} min ${s}s ahead</b>`
+        : `Early — <b>${s}s ahead</b>`;
+    } else {
+      statusLabel = 'Running early';
+    }
   } else if (status === 'on_time') {
     const secs = delay !== null ? ` (${delay > 0 ? '+' : ''}${delay}s)` : '';
     statusLabel = `On time${secs}`;
   } else {
     statusColour = '#64748b'; statusIcon = '⚪';
-    statusLabel  = 'Status unknown — not yet near a stop';
+    statusLabel  = 'Calculating…';
   }
 
-  // ── Stop context ──────────────────────────────────────────────
-  const stopLine = v.matched_stop_name
-    ? (v.between_stops
-        ? `<br><small style="color:#64748b">Last stop: ${v.matched_stop_name} (${v.matched_stop_dist_m}m away)</small>`
-        : `<br><small style="color:#475569">📍 At stop: <b>${v.matched_stop_name}</b> (${v.matched_stop_dist_m}m)</small>`)
-    : '';
+  // ── Next stop & ETA ───────────────────────────────────────────
+  let nextStopLine = '';
+  if (v.next_stop_name || v.matched_stop_name) {
+    const stopName = v.next_stop_name || v.matched_stop_name;
+    const distM    = v.next_stop_dist_m ?? v.matched_stop_dist_m;
+    const etaSec   = v.eta_seconds_away;
 
+    let etaStr = '';
+    if (typeof etaSec === 'number') {
+      if (etaSec < 60) {
+        etaStr = ` — arriving in <b>${Math.round(etaSec)}s</b>`;
+      } else {
+        const m = Math.floor(etaSec / 60);
+        const s = Math.round(etaSec % 60);
+        etaStr = ` — ETA <b>${m}m ${s}s</b>`;
+      }
+    }
+
+    const distStr = distM != null ? ` (${distM}m away)` : '';
+    nextStopLine = `<br><small style="color:#475569">🚏 Next: <b>${stopName}</b>${distStr}${etaStr}</small>`;
+  }
+
+  // ── Speed ─────────────────────────────────────────────────────
+  let speedLine = '';
+  if (v.calculated_speed_kmh != null) {
+    const src = v.speed_source === 'gps_delta'
+      ? `<span style="color:#16a34a" title="Calculated from last two GPS fixes">GPS Δ</span>`
+      : v.speed_source === 'gtfs_rt'
+        ? `<span style="color:#2563eb" title="Reported by vehicle transponder">RT</span>`
+        : `<span style="color:#94a3b8" title="Default estimate (first GPS fix)">est.</span>`;
+
+    let deltaDetail = '';
+    if (v.speed_source === 'gps_delta' && v.gps_delta_dist_m != null) {
+      deltaDetail = ` <small style="color:#94a3b8">(${v.gps_delta_dist_m}m / ${v.gps_delta_dt_sec}s)</small>`;
+    }
+
+    speedLine = `<br>🚀 Speed: <b>${v.calculated_speed_kmh} km/h</b> ${src}${deltaDetail}`;
+  } else if (v.speed != null) {
+    speedLine = `<br>Speed: ${v.speed} km/h`;
+  }
+
+  // ── Data quality ──────────────────────────────────────────────
   const staleTxt = v.is_stale
     ? `<span style="color:#d97706">⚠️ Stale GPS (${v.age_seconds}s old)</span>`
     : '<span style="color:#16a34a">✓ Live GPS</span>';
   const snapTxt  = v.snapped
-    ? `<span style="color:#2563eb">📍 Shape-snapped (${v.snap_distance_m}m)</span>`
+    ? `<span style="color:#2563eb">📍 Snapped (${v.snap_distance_m}m)</span>`
     : v.snap_distance_m
       ? `<span style="color:#64748b">Raw GPS (${v.snap_distance_m}m off-route)</span>`
       : '';
   const teleport = v.teleport_flagged
-    ? `<br><span style="color:#dc2626">🚨 Position jump (${v.implied_speed_kmh} km/h implied)</span>`
+    ? `<br><span style="color:#dc2626">🚨 Position jump (${v.implied_speed_kmh} km/h)</span>`
     : '';
 
-  return `<div style="min-width:200px;font-size:.8rem;line-height:1.65">
+  return `<div style="min-width:210px;font-size:.8rem;line-height:1.7">
     <strong style="font-size:.9rem">🚌 Vehicle ${v.vehicle_id}</strong>
     <br>Route: <b>${v.route_id || '–'}</b>
     ${v.trip_id ? `<br>Trip: <span style="color:#64748b">${v.trip_id}</span>` : ''}
-    <br><span style="color:${statusColour}">${statusIcon} ${statusLabel}</span>
-    ${stopLine}
-    ${v.speed != null ? `<br>Speed: ${v.speed} km/h` : ''}
+    <hr style="margin:.3rem 0;border:none;border-top:1px solid #e2e8f0">
+    <span style="color:${statusColour}">${statusIcon} ${statusLabel}</span>
+    ${nextStopLine}
+    ${speedLine}
     ${v.bearing ? `<br>Heading: ${Math.round(v.bearing)}°` : ''}
+    <hr style="margin:.3rem 0;border:none;border-top:1px solid #e2e8f0">
     <br>${staleTxt}
-    ${snapTxt ? '<br>' + snapTxt : ''}
+    ${snapTxt ? ' · ' + snapTxt : ''}
     ${teleport}
     <br><small style="color:#94a3b8">GPS fix: ${v.timestamp ? new Date(v.timestamp * 1000).toLocaleTimeString() : '–'}</small>
   </div>`;
