@@ -55,10 +55,7 @@ global.cache = {
   delayHistory:   [],   // [ {trip_id, route_id, delay_sec, timestamp} ]
 };
 
-const { store } = require('./db'); // adjust path if needed
-
-const EARLY_THRESHOLD_SEC = -29;
-const LATE_THRESHOLD_SEC  = 5 * 60 + 29; // 329 seconds
+const { store } = require('./db');
 
 // ── Normalize GTFS-RT trip_id to static GTFS trip_id ──
 // Example:
@@ -69,6 +66,10 @@ function normalizeTripId(rtTripId) {
   return rtTripId.split('__')[0];
 }
 
+// ── Classify delay using the same thresholds as ontimeEngine ──
+// (used only for console metrics, NOT for vehicle performance_status)
+const EARLY_THRESHOLD_SEC = ontimeEngine.EARLY_SEC;  // -29
+const LATE_THRESHOLD_SEC  = ontimeEngine.LATE_SEC;   // 329
 
 function classifyArrivalBySeconds(deltaSec) {
   if (deltaSec > LATE_THRESHOLD_SEC) return 'late';
@@ -76,14 +77,35 @@ function classifyArrivalBySeconds(deltaSec) {
   return 'on_time';
 }
 
+/**
+ * Convert a GTFS HH:MM:SS string to a Unix timestamp anchored to the
+ * service date, using the same ±6h window logic as ontimeEngine.
+ * This avoids the local-midnight bug in the old scheduledStopTimeToUnix().
+ */
 function scheduledStopTimeToUnix(actualUnix, hhmmss) {
   if (!actualUnix || !hhmmss) return null;
 
-  const d = new Date(actualUnix * 1000);
-  d.setHours(0, 0, 0, 0);
+  const parts = hhmmss.split(':').map(Number);
+  if (parts.length !== 3 || parts.some(isNaN)) return null;
+  const [h, m, s] = parts;
+  const scheduledSecOfDay = h * 3600 + m * 60 + s;
 
-  const [h, m, s] = hhmmss.split(':').map(Number);
-  return Math.floor(d.getTime() / 1000) + (h * 3600 + m * 60 + s);
+  const DAY_SEC = 86400;
+  let best = null;
+  let bestDiff = Infinity;
+
+  for (let offset = -1; offset <= 1; offset++) {
+    const midnightCandidate = Math.floor(actualUnix / DAY_SEC) * DAY_SEC + offset * DAY_SEC;
+    const candidate = midnightCandidate + scheduledSecOfDay;
+    const diff = Math.abs(candidate - actualUnix);
+    if (diff < bestDiff) {
+      bestDiff = diff;
+      best = candidate;
+    }
+  }
+
+  if (bestDiff > 12 * 3600) return null;
+  return best;
 }
 
 // ── haversine (meters) ───────────────────────────────────────────
@@ -95,38 +117,9 @@ function haversine(lat1, lon1, lat2, lon2) {
   const a = Math.sin(df/2)**2 + Math.cos(f1)*Math.cos(f2)*Math.sin(dl/2)**2;
   return R * 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1-a));
 }
-// ── find closest stop sequence for a vehicle's trip (for on-time evaluation) ──
-function closestStopSequence(vehicle, store) {
-  const stopTimes = store.stopTimesByTrip?.[vehicle.trip_id];
-  if (!stopTimes) return null;
-
-  let bestSeq = null;
-  let bestDist = Infinity;
-
-  for (const st of stopTimes) {
-    const stop = store.stopsById[st.stop_id];
-    if (!stop) continue;
-
-    const d = haversine(
-      vehicle.latitude,
-      vehicle.longitude,
-      stop.stop_lat,
-      stop.stop_lon
-    );
-
-    if (d < bestDist) {
-      bestDist = d;
-      bestSeq = st.stop_sequence;
-    }
-  }
-
-  return bestSeq;
-}
-
 
 // ── snap GPS point to nearest shape polyline ────────────────────
 function snapToShape(lat, lon, shapeCoords) {
-  // shapeCoords: [[lon, lat], ...]  (GeoJSON order)
   if (!shapeCoords || shapeCoords.length === 0) return { lat, lon, snapped: false };
 
   let bestDist = Infinity, bestLat = lat, bestLon = lon;
@@ -152,18 +145,11 @@ function getScheduledArrivalUnix(tripId, stopSequence) {
 
   if (!stop || stop.arrival_time_sec == null) return null;
 
-  // GTFS arrival_time_sec is seconds since midnight
-  const serviceDateMidnight =
-    db.store.serviceDateMidnight || 0;
-
+  const serviceDateMidnight = db.store.serviceDateMidnight || 0;
   return serviceDateMidnight + stop.arrival_time_sec;
 }
 
 // ── GTFS-RT protobuf parsing ─────────────────────────────────────
-// We use a hand-rolled minimal proto parser since we don't have
-// the .proto file on disk. protobufjs can parse from JSON descriptor.
-// Falls back to binary scan if descriptor unavailable.
-
 const GTFS_RT_PROTO_JSON = {
   "nested": {
     "transit_realtime": {
@@ -305,7 +291,7 @@ function decodeProtobuf(buffer) {
 }
 
 // ── staleness check ──────────────────────────────────────────────
-const STALE_MS = 7 * 60_000; // 7 minutes (realistic for DRT feed timing)
+const STALE_MS = 7 * 60_000;
 
 function enrichVehicle(v) {
   const now = Date.now();
@@ -320,9 +306,8 @@ function enrichVehicle(v) {
 }
 
 // ── vehicle deduplication / teleport filter ──────────────────────
-const prevPositions = {};  // vehicle_id → {lat, lon, ts}
-const MAX_SPEED_MPS = 40;  // ~144 km/h — flag if exceeded
-const prevVehicleState = {}; // vehicle_id → previous enriched vehicle (for performance status comparison)
+const prevPositions = {};
+const MAX_SPEED_MPS = 40;
 
 function filterTeleport(vehicle) {
   const id  = vehicle.vehicle_id;
@@ -354,7 +339,6 @@ async function fetchVehiclePositions() {
     const now  = Date.now();
     const vehicles = [];
 
-
     for (const entity of feed.entity) {
       const vp = entity.vehicle;
       if (!vp || !vp.position) continue;
@@ -384,8 +368,6 @@ async function fetchVehiclePositions() {
         route_id:         routeId,
         latitude:         snappedLat,
         longitude:        snappedLon,
-
-        
         raw_latitude:     lat,
         raw_longitude:    lon,
         bearing:          vp.position.bearing   || 0,
@@ -400,51 +382,13 @@ async function fetchVehiclePositions() {
       vehicle = filterTeleport(vehicle);
       vehicles.push(enrichVehicle(vehicle));
     }
-    // ── Arrival detection via stop-sequence crossing (Google-style) ──
-for (const v of vehicles) {
-  if (!v.trip_id || !v.timestamp) continue;
 
-  // determine current closest stop sequence
-  const currSeq = closestStopSequence(v, db.store);
-  if (currSeq == null) continue;
-
-  const prevState = prevVehicleState[v.vehicle_id];
-  const prevSeq = prevState?.stop_sequence;
-
-  // detect forward crossing (arrival event)
-  if (
-    prevSeq != null &&
-    currSeq > prevSeq &&
-    (v.last_served_stop_sequence == null || v.last_served_stop_sequence < currSeq)
-  ) {
-    const stopTimes = db.store.stopTimesByTrip?.[v.trip_id];
-    const stopTime = stopTimes?.find(s => s.stop_sequence === currSeq);
-
-    if (stopTime && stopTime.arrival_time_sec != null) {
-      const scheduledUnix =
-        db.store.serviceDateMidnight + stopTime.arrival_time_sec;
-
-      const deltaSec = v.timestamp - scheduledUnix;
-
-      // classify
-      if (deltaSec > 120) v.performance_status = 'late';
-      else if (deltaSec < -60) v.performance_status = 'early';
-      else v.performance_status = 'on_time';
-
-      v.delay_seconds = deltaSec;
-      v.matched_stop_id = stopTime.stop_id;
-      v.at_stop_sequence = currSeq;
-      v.between_stops = false;
-      v.last_served_stop_sequence = currSeq;
-    }
-  }
-
-  // update previous state
-  prevVehicleState[v.vehicle_id] = {
-    stop_sequence: currSeq,
-    timestamp: v.timestamp
-  };
-}
+    // ── FIX: Run ontimeEngine on ALL vehicles after array is complete ──
+    // This is the single authoritative source for performance_status,
+    // delay_seconds, matched_stop_id, matched_stop_name, and between_stops.
+    // It uses raw_latitude/raw_longitude (actual GPS) for proximity matching
+    // so shape-snapping does not distort the stop-distance calculation.
+    ontimeEngine.evaluateAll(vehicles, db.store);
 
     global.cache.vehicles    = vehicles;
     global.cache.lastUpdated.vehicles = new Date().toISOString();
@@ -457,7 +401,15 @@ for (const v of vehicles) {
                                lat: v.latitude, lon: v.longitude, ts: now })),
     ];
 
-    console.log(`Vehicles: ${vehicles.length} (${vehicles.filter(v => v.snapped).length} snapped)`);
+    // Console summary
+    const late    = vehicles.filter(v => v.performance_status === 'late').length;
+    const early   = vehicles.filter(v => v.performance_status === 'early').length;
+    const onTime  = vehicles.filter(v => v.performance_status === 'on_time').length;
+    const unknown = vehicles.filter(v => v.performance_status === 'unknown').length;
+    console.log(
+      `Vehicles: ${vehicles.length} (${vehicles.filter(v => v.snapped).length} snapped) | ` +
+      `Late: ${late} | Early: ${early} | OnTime: ${onTime} | Unknown: ${unknown}`
+    );
   } catch (err) {
     console.warn('Vehicle positions error:', err.message);
   }
@@ -483,7 +435,6 @@ async function fetchTripUpdates() {
       const routeId = tu.trip?.route_id || db.store.tripToRoute[tripId] || '';
       const ts      = Number(tu.timestamp) || Math.floor(Date.now() / 1000);
 
-      // Extract per-stop delays (keep null for missing fields)
       const stopUpdates = (tu.stop_time_update || []).map(stu => {
         const arrivalDelay = (typeof stu.arrival?.delay === 'number') ? stu.arrival.delay : null;
         const departureDelay = (typeof stu.departure?.delay === 'number') ? stu.departure.delay : null;
@@ -498,12 +449,10 @@ async function fetchTripUpdates() {
         };
       });
 
-      // Find first actual delay from stop updates (arrival preferred)
       let firstDelay = null;
       let delaySource = 'none';
 
       if (stopUpdates.length > 0) {
-        // DEBUG: Log raw stop update data for first few trips
         if (updates.length < 3) {
           console.log(`[DEBUG] Trip ${tripId}: stop_updates=`, JSON.stringify(stopUpdates.slice(0, 2)));
         }
@@ -524,18 +473,15 @@ async function fetchTripUpdates() {
 
       let derivedDelay = null;
 
-      // ── derive delay using GPS if GTFS-RT delay is missing ──
       if (firstDelay === null && stopUpdates.length > 0) {
         const gpsVehicle = global.cache.vehicles.find(v => v.trip_id === tripId);
 
         if (gpsVehicle && gpsVehicle.snapped && gpsVehicle.timestamp) {
-          // Find next upcoming stop
           const nextStop = stopUpdates.find(s => s.stop_sequence > 0);
           if (nextStop) {
             const scheduledUnix = getScheduledArrivalUnix(tripId, nextStop.stop_sequence);
 
             if (scheduledUnix !== null && scheduledUnix > 0) {
-              // Vehicle timestamp in seconds, scheduled in seconds
               derivedDelay = Math.round(gpsVehicle.timestamp - scheduledUnix);
               firstDelay = derivedDelay;
               delaySource = 'derived_from_gps';
@@ -544,12 +490,12 @@ async function fetchTripUpdates() {
         }
       }
 
-      // Determine status with explicit thresholds
+      // status string uses on_time (underscore) to match ontimeEngine convention
       let status = 'unknown';
       if (firstDelay !== null && typeof firstDelay === 'number') {
-        if (firstDelay > 60) status = 'late';        // > 1 min
-        else if (firstDelay < -60) status = 'early'; // < -1 min
-        else status = 'on-time';
+        if (firstDelay > LATE_THRESHOLD_SEC) status = 'late';
+        else if (firstDelay < EARLY_THRESHOLD_SEC) status = 'early';
+        else status = 'on_time';
       }
 
       updates.push({
@@ -562,82 +508,72 @@ async function fetchTripUpdates() {
         stop_updates:          stopUpdates,
         timestamp:             ts,
       });
-
     }
 
     global.cache.tripUpdates    = updates;
     global.cache.lastUpdated.tripUpdates = new Date().toISOString();
 
-    // ── Feed health statistics (DO NOT USE FOR LATE/ON‑TIME) ──
-const delayStats = {
-  with_rt_delay: updates.filter(u =>
-    u.delay_source === 'arrival_delay' ||
-    u.delay_source === 'departure_delay'
-  ).length,
+    // ── Feed health statistics ──
+    const delayStats = {
+      with_rt_delay: updates.filter(u =>
+        u.delay_source === 'arrival_delay' ||
+        u.delay_source === 'departure_delay'
+      ).length,
+      derived_gps: updates.filter(u => u.delay_source === 'derived_from_gps').length,
+      unknown:     updates.filter(u => u.delay_source === 'none').length,
+    };
 
-  derived_gps: updates.filter(u =>
-    u.delay_source === 'derived_from_gps'
-  ).length,
+    // ── Console on-time metrics (static GTFS join) ──
+    let late = 0, early = 0, onTime = 0;
 
-  unknown: updates.filter(u =>
-    u.delay_source === 'none'
-  ).length,
-};
+    for (const u of updates) {
+      if (!u.trip_id || !u.stop_updates?.length) continue;
 
+      const stopTimes = db.store.stopTimesByTrip[u.trip_id];
+      if (!stopTimes) continue;
 
-// ── Console on‑time metrics (STATIC GTFS JOIN — SAME AS ANALYTICS) ──
-let late = 0;
-let early = 0;
-let onTime = 0;
+      const rtStop = u.stop_updates[0];
+      const actualUnix = rtStop.arrival_time;
+      if (!actualUnix) continue;
 
-for (const u of updates) {
-  if (!u.trip_id || !u.stop_updates?.length) continue;
+      let staticStop = stopTimes.find(
+        s => s.stop_sequence === rtStop.stop_sequence
+      ) || stopTimes.find(
+        s => s.stop_id === rtStop.stop_id
+      );
 
-  const stopTimes = db.store.stopTimesByTrip[u.trip_id];
-  if (!stopTimes) continue;
+      if (!staticStop || !staticStop.arrival_time) continue;
 
-  const rtStop = u.stop_updates[0];
-  const actualUnix = rtStop.arrival_time;
-  if (!actualUnix) continue;
+      const scheduledUnix = scheduledStopTimeToUnix(actualUnix, staticStop.arrival_time);
+      if (!scheduledUnix) continue;
 
-  let staticStop = stopTimes.find(
-    s => s.stop_sequence === rtStop.stop_sequence
-  ) || stopTimes.find(
-    s => s.stop_id === rtStop.stop_id
-  );
+      const deltaSec = actualUnix - scheduledUnix;
+      const status = classifyArrivalBySeconds(deltaSec);
 
-  if (!staticStop || !staticStop.arrival_time) continue;
+      if (status === 'late') late++;
+      else if (status === 'early') early++;
+      else onTime++;
+    }
 
-  const scheduledUnix =
-    scheduledStopTimeToUnix(actualUnix, staticStop.arrival_time);
-  if (!scheduledUnix) continue;
+    console.log(
+      `Trip updates: ${updates.length} | ` +
+      `RT: ${delayStats.with_rt_delay} | ` +
+      `GPS: ${delayStats.derived_gps} | ` +
+      `Unknown: ${delayStats.unknown} | ` +
+      `Late: ${late} | Early: ${early} | OnTime: ${onTime}`
+    );
 
- const deltaSec = actualUnix - scheduledUnix;
-  const status = classifyArrivalBySeconds(deltaSec);
-
-  if (status === 'late') late++;
-  else if (status === 'early') early++;
-  else onTime++;
-}
-
-console.log(
-  `Trip updates: ${updates.length} | ` +
-  `RT: ${delayStats.with_rt_delay} | ` +
-  `GPS: ${delayStats.derived_gps} | ` +
-  `Unknown: ${delayStats.unknown} | ` +
-  `Late: ${late} | Early: ${early} | OnTime: ${onTime}`
-);
     // Record delay history for analytics (rolling 30 min)
     const now    = Date.now();
     const cutoff = now - 30 * 60_000;
     global.cache.delayHistory = [
       ...global.cache.delayHistory.filter(h => h.ts > cutoff),
-      ...updates.filter(u => u.arrival_delay !== null).map(u => ({ 
-        trip_id: u.trip_id, 
+      ...updates.filter(u => u.arrival_delay !== null).map(u => ({
+        trip_id: u.trip_id,
         route_id: u.route_id,
-        delay_sec: u.arrival_delay, 
+        delay_sec: u.arrival_delay,
         status: u.status,
-        ts: now 
+        ts: now
       })),
     ];
   } catch (err) {
@@ -718,9 +654,15 @@ app.get('/api/health', (_req, res) => {
       lastUpdated: global.cache.lastUpdated,
     },
     dataQuality: {
-      snappedVehicles: global.cache.vehicles.filter(v => v.snapped).length,
-      staleVehicles:   global.cache.vehicles.filter(v => v.is_stale).length,
-      flaggedTeleports:global.cache.vehicles.filter(v => v.teleport_flagged).length,
+      snappedVehicles:  global.cache.vehicles.filter(v => v.snapped).length,
+      staleVehicles:    global.cache.vehicles.filter(v => v.is_stale).length,
+      flaggedTeleports: global.cache.vehicles.filter(v => v.teleport_flagged).length,
+    },
+    onTimeStatus: {
+      late:    global.cache.vehicles.filter(v => v.performance_status === 'late').length,
+      early:   global.cache.vehicles.filter(v => v.performance_status === 'early').length,
+      on_time: global.cache.vehicles.filter(v => v.performance_status === 'on_time').length,
+      unknown: global.cache.vehicles.filter(v => v.performance_status === 'unknown').length,
     },
   });
 });
@@ -732,70 +674,6 @@ app.use((err, _req, res, _next) => {
   console.error(err.stack);
   res.status(500).json({ error: 'Internal server error' });
 });
-
-/**
- * Build a map of trip_id → worst delay (seconds)
- * Source: normalized global.cache.tripUpdates (authoritative)
- */
-function buildTripDelayMapFromCache(tripUpdates) {
-  const tripDelayMap = new Map();
-
-  tripUpdates.forEach(u => {
-    if (!u.trip_id) return;
-
-    let d = null;
-
-    // Prefer derived delay if present, else GTFS arrival_delay
-    if (typeof u.derived_arrival_delay === 'number') {
-      d = u.derived_arrival_delay;
-    } else if (typeof u.arrival_delay === 'number') {
-      d = u.arrival_delay;
-    }
-
-    if (d !== null) {
-      tripDelayMap.set(u.trip_id, d);
-    }
-  });
-
-  return tripDelayMap;
-}
-
-// ── Apply TripUpdate delays to vehicles (authoritative source) ──
-// Vehicles + analytics expect:
-//   v.delay_seconds
-//   v.performance_status
-function applyTripUpdateDelaysToVehicles() {
-  const delayMap = new Map();
-
-  for (const u of global.cache.tripUpdates) {
-    if (!u.trip_id) continue;
-
-    let d = null;
-
-    // Prefer GPS-derived delay if available, else RT delay
-    if (typeof u.derived_arrival_delay === 'number') {
-      d = u.derived_arrival_delay;
-    } else if (typeof u.arrival_delay === 'number') {
-      d = u.arrival_delay;
-    }
-
-    if (d !== null) {
-      delayMap.set(u.trip_id, {
-        delay_seconds: d,
-        performance_status: u.status === 'on-time' ? 'on_time' : u.status,
-      });
-    }
-  }
-
-  for (const v of global.cache.vehicles) {
-    const info = delayMap.get(v.trip_id);
-    if (info) {
-      v.delay_seconds = info.delay_seconds;
-      v.performance_status = info.performance_status;
-    }
-  }
-}
-
 
 // ── startup ──────────────────────────────────────────────────────
 async function startServer() {
@@ -810,6 +688,9 @@ async function startServer() {
       fetchAlerts(),
     ]);
 
+    // Prune stale ontimeEngine entries every 5 minutes
+    setInterval(() => ontimeEngine.pruneState(), 5 * 60_000);
+
     // Refresh every 30 seconds
     cron.schedule('*/30 * * * * *', async () => {
       await Promise.allSettled([
@@ -817,7 +698,6 @@ async function startServer() {
         fetchTripUpdates(),
         fetchAlerts(),
       ]);
-
     });
 
     app.listen(PORT, () => {

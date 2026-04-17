@@ -57,11 +57,12 @@ function initMap() {
     _currentRouteId = e.target.value;
     onRouteChange(_currentRouteId);
   });
-  
+
   document.getElementById('togLateOnly')?.addEventListener('change', e => {
-  _showLateOnly = e.target.checked;
-  refreshMapVehicles();
-});
+    _showLateOnly = e.target.checked;
+    refreshMapVehicles();
+  });
+
   ['togVehicles','togRoutes','togStops','togAlerts','togFlags','togSnapped'].forEach(id => {
     document.getElementById(id)?.addEventListener('change', syncLayerVisibility);
   });
@@ -76,12 +77,13 @@ function initMap() {
 
 
 // Official DRT on‑time performance thresholds (seconds)
+// These match ontimeEngine.js — kept here for reference only.
+// Do NOT use these for filtering; always use v.performance_status instead.
 const PERFORMANCE_THRESHOLDS = {
-  EARLY: -30,     // more than 30s early
-  ONTIME_LOW: -30,
-  ONTIME_HIGH: 330, // 5m 30s late
-  LATE: 330
+  EARLY: -29,
+  LATE:   329,
 };
+
 // ── populate route dropdown ───────────────────────────────────────
 async function populateRouteDropdown() {
   try {
@@ -210,13 +212,12 @@ async function refreshMapVehicles() {
     const vehicles = data.data || [];
     let visibleVehicles = vehicles;
 
-// 🚨 Late-only filter
-if (_showLateOnly) {
-  visibleVehicles = vehicles.filter(v =>
-    typeof v.delay_seconds === 'number' &&
-    v.delay_seconds > PERFORMANCE_THRESHOLDS.LATE
-  );
-}
+    // FIX: Filter by performance_status (set by ontimeEngine on the backend),
+    // not by raw delay_seconds arithmetic. This keeps the filter in sync with
+    // the icon color logic in vehicleIcon() which also reads performance_status.
+    if (_showLateOnly) {
+      visibleVehicles = vehicles.filter(v => v.performance_status === 'late');
+    }
 
     window.global_vehicles_cache = vehicles;
 
@@ -236,7 +237,7 @@ if (_showLateOnly) {
         icon: vehicleIcon(v),
         zIndexOffset: v.is_stale ? 0 : 100,
       });
-      
+
       m.__vehicleData = v;
       window.liveVehicleMarkers[v.vehicle_id] = m;
 
@@ -264,24 +265,20 @@ if (_showLateOnly) {
         `<b>${visibleVehicles.length}</b> ${_showLateOnly ? 'late' : ''} vehicles<br>` +
           `<span style="color:#16a34a">${snapped} snapped</span> · ` +
           `<span style="color:#d97706">${stale} stale</span>`;
-
     }
-        
-const lateVehicles = vehicles.filter(
-  v => typeof v.delay_seconds === 'number' &&
-       v.delay_seconds > PERFORMANCE_THRESHOLDS.LATE
-);
 
-// Update late bus summary panel in sidebar
-renderLateBusSummary(lateVehicles);
+    // FIX: Use performance_status for the late bus summary panel too —
+    // consistent with the filter and icon logic above.
+    const lateVehicles = vehicles.filter(v => v.performance_status === 'late');
+    renderLateBusSummary(lateVehicles);
 
-      // Re‑apply Presenter Mode filtering after refresh
-      if (
-        window.presenterMapController &&
-        presenterVehicleVisibility.activeRegion
-          ) {
-          applyRegionVehicleFilter(presenterVehicleVisibility.activeRegion);
-            }
+    // Re‑apply Presenter Mode filtering after refresh
+    if (
+      window.presenterMapController &&
+      presenterVehicleVisibility.activeRegion
+    ) {
+      applyRegionVehicleFilter(presenterVehicleVisibility.activeRegion);
+    }
   } catch (e) {
     console.warn('Vehicle refresh error:', e);
   }
@@ -469,7 +466,6 @@ async function loadAlertsOnMap() {
 
 // ── context menu ──────────────────────────────────────────────────
 function handleContextMenu(e) {
-  // Find nearest stop within 150m
   let best = null, bestDist = 150;
   LG.stops.eachLayer(m => {
     const d = e.latlng.distanceTo(m.getLatLng());
@@ -477,8 +473,6 @@ function handleContextMenu(e) {
   });
   if (best) {
     const latlng = best.getLatLng();
-    const pop    = best.getPopup()?.getContent() || '';
-    // Try to extract stop info from popup
     openFlagModal('stop', 'Selected Stop', latlng.lat, latlng.lng);
   }
 }
@@ -498,40 +492,14 @@ function syncLayerVisibility() {
  * ================================================================
  * PRESENTER MODE — MAP INTEGRATION
  * ================================================================
- *
- * This block integrates Presenter Mode with the existing map.
- * It exposes a small, controlled interface that allows:
- *
- *   - Zooming the map to a specific region
- *   - Filtering vehicles by region boundaries
- *   - Showing only relevant routes during presentation
- *
- * IMPORTANT:
- * -----------
- * This code does NOT alter normal map behavior unless
- * Presenter Mode is actively invoking it.
- *
- * ================================================================
  */
 
-/**
- * Cache of all live vehicle markers.
- * We reuse existing markers rather than rebuilding them.
- */
 const presenterVehicleVisibility = {
   activeRegion: null
 };
 
-/**
- * Determines whether a vehicle lies within a region bounding box.
- *
- * @param {Object} vehicle - Live vehicle object
- * @param {Array} bounds  - [[southLat, westLon], [northLat, eastLon]]
- * @returns {boolean}
- */
 function isVehicleInRegion(vehicle, bounds) {
   const [[southLat, westLon], [northLat, eastLon]] = bounds;
-
   return (
     vehicle.latitude  >= southLat &&
     vehicle.latitude  <= northLat &&
@@ -540,14 +508,6 @@ function isVehicleInRegion(vehicle, bounds) {
   );
 }
 
-/**
- * Apply region-based visibility filtering to vehicles.
- *
- * Vehicles inside the region:
- *   ✅ Visible
- * Vehicles outside the region:
- *   ❌ Hidden (not removed, just hidden)
- */
 function applyRegionVehicleFilter(region) {
   presenterVehicleVisibility.activeRegion = region;
 
@@ -559,78 +519,40 @@ function applyRegionVehicleFilter(region) {
   Object.values(window.liveVehicleMarkers).forEach(marker => {
     const vehicle = marker.__vehicleData;
     if (!vehicle) return;
-
     const visible = isVehicleInRegion(vehicle, region.bounds);
-
-    if (visible) {
-      marker.setOpacity(1);
-    } else {
-      marker.setOpacity(0);
-    }
+    marker.setOpacity(visible ? 1 : 0);
   });
 }
 
-/**
- * Restore normal vehicle visibility (exit Presenter Mode).
- */
 function clearRegionVehicleFilter() {
   presenterVehicleVisibility.activeRegion = null;
-
   if (!window.liveVehicleMarkers) return;
-
-  Object.values(window.liveVehicleMarkers).forEach(marker => {
-    marker.setOpacity(1);
-  });
+  Object.values(window.liveVehicleMarkers).forEach(marker => marker.setOpacity(1));
 }
 
-/**
- * Zoom the map to a region and apply filtering.
- *
- * This is the PRIMARY entry point used by presenter.js
- */
 function showRegion(region, options = {}) {
-  const {
-    animate = true,
-    durationMs = 2000
-  } = options;
+  const { animate = true, durationMs = 2000 } = options;
 
- if (!_map) {
-  console.warn("Leaflet map not initialized");
-  return;
-}
+  if (!_map) {
+    console.warn("Leaflet map not initialized");
+    return;
+  }
 
-// Zoom map to region
-_map.fitBounds(region.bounds, {
-  padding: [40, 40],
-  animate,
-  duration: durationMs / 1000
-});
+  _map.fitBounds(region.bounds, {
+    padding: [40, 40],
+    animate,
+    duration: durationMs / 1000
+  });
 
-  // Apply vehicle filtering
   applyRegionVehicleFilter(region);
-
-  console.log(
-    `[MAP] Presenter region applied: ${region.name}`
-  );
+  console.log(`[MAP] Presenter region applied: ${region.name}`);
   _currentRouteId = '';
 }
 
-/**
- * Expose the Presenter Mode controller for presenter.js
- *
- * We intentionally keep this interface minimal.
- */
 window.presenterMapController = {
   showRegion,
   clearRegionVehicleFilter
 };
-
-/**
- * ================================================================
- * END PRESENTER MODE MAP INTEGRATION
- * ================================================================
- */
-
 
 // ── late bus summary panel ────────────────────────────────────────
 function renderLateBusSummary(lateVehicles) {
@@ -660,13 +582,13 @@ function renderLateBusSummary(lateVehicles) {
 
   listEl.innerHTML = Object.entries(byRoute)
     .sort((a, b) => {
-      // Sort by worst delay first
-      const maxA = Math.max(...a[1].map(v => v.delay_seconds));
-      const maxB = Math.max(...b[1].map(v => v.delay_seconds));
+      // Sort by worst delay first (delay_seconds may be null for some — treat as 0)
+      const maxA = Math.max(...a[1].map(v => v.delay_seconds ?? 0));
+      const maxB = Math.max(...b[1].map(v => v.delay_seconds ?? 0));
       return maxB - maxA;
     })
     .map(([routeId, buses]) => {
-      const maxDelay = Math.max(...buses.map(v => v.delay_seconds));
+      const maxDelay = Math.max(...buses.map(v => v.delay_seconds ?? 0));
       const delayMin = Math.round(maxDelay / 60);
       return `<div class="late-bus-row" onclick="filterToLateRoute('${routeId}')" title="Click to filter to route ${routeId}">
         <span class="late-route-pill">${routeId}</span>
