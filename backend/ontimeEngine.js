@@ -1,73 +1,69 @@
 'use strict';
 /**
  * ================================================================
- * On-Time Engine — DRT Operations Hub  (v2 — ETA Projection)
+ * On-Time Engine v3 — DRT Operations Hub
  * ================================================================
  *
- * HOW IT WORKS (Google Maps-style approach)
- * -----------------------------------------
- * Instead of waiting for a bus to physically reach a stop (the old
- * 50m radius gate that kept every bus grey), we project forward:
+ * HOW IT WORKS (Google Maps-style ETA projection)
+ * ------------------------------------------------
+ *   1. Find the NEXT scheduled stop on the vehicle's trip by
+ *      locating the closest stop by GPS distance. If the vehicle
+ *      is already within 80 m of it (i.e. at/just past it), step
+ *      forward one stop in sequence.
  *
- *   1. Find the NEXT scheduled stop for this vehicle on its trip —
- *      the first stop ahead of the vehicle's current position,
- *      identified by finding the closest stop and stepping forward
- *      in sequence if the bus is already at/past it.
+ *   2. Calculate speed from consecutive GPS fixes stored in
+ *      global.gpsHistory. Uses wall-clock time (Date.now()) as
+ *      the delta denominator — NOT the GPS timestamp — because
+ *      DRT's feed quantises timestamps to the minute, which would
+ *      produce ts_prev === ts_curr and zero speed every poll.
+ *      Falls back to GTFS-RT reported speed, then 30 km/h default.
  *
- *   2. Calculate the vehicle's current speed from the last two GPS
- *      fixes (stored in global.gpsHistory per vehicle_id).
- *      Falls back to GTFS-RT reported speed, then to a conservative
- *      urban default of 30 km/h.
+ *   3. ETA = vehicle_timestamp + (distance_to_stop / speed_mps)
  *
- *   3. Compute ETA = vehicle_timestamp + (distance_to_next_stop / speed)
+ *   4. delay = ETA − scheduled_arrival_at_stop
+ *        < −29 s  → 'early'
+ *        ≤  329 s → 'on_time'
+ *        >  329 s → 'late'
  *
- *   4. Compare ETA to the scheduled arrival at that stop:
- *        delay = ETA − scheduled_unix
- *        delay < −29 s  → early    (DRT official threshold)
- *        delay ≤  329 s → on_time  (DRT official threshold)
- *        delay >  329 s → late     (DRT official threshold)
+ * TRIP-ID NORMALIZATION
+ * ----------------------
+ * DRT's GTFS-RT feed appends suffixes to trip_ids
+ * (e.g. "5608__2026-04"). The static GTFS JSON may be keyed by
+ * either the full or the stripped id. getStopTimesForTrip() tries
+ * both, using the stopTimesByTripNorm index built by db.js.
  *
- *   5. Results are written into global.ontimeState[vehicle_id] and
- *      attached to each vehicle object in-place by evaluateAll().
- *
- * SPEED CALCULATION
- * -----------------
- * On every poll cycle the previous GPS fix for each vehicle is kept
- * in global.gpsHistory[vehicle_id] = { lat, lon, ts }.
- * Speed = haversine(prev, curr) / (curr.ts − prev.ts)  [m/s]
- * Exposed on the vehicle object as:
- *   v.calculated_speed_kmh  — GPS-derived speed (km/h, 1 decimal)
- *   v.speed_source          — 'gps_delta' | 'gtfs_rt' | 'default'
- *   v.gps_delta_dist_m      — metres travelled between last two fixes
- *   v.gps_delta_dt_sec      — seconds between last two fixes
- *
+ * ARRIVAL-TIME FIELD
+ * ------------------
+ * db.js normalises every stop-time row so arrival_time is always
+ * an HH:MM:SS string (converting from arrival_time_sec if needed).
+ * scheduledToUnix() uses a ±12-hour window, so it works regardless
+ * of server timezone and handles overnight trips (hours > 24).
  * ================================================================
  */
 
-// ── DRT official on-time thresholds ─────────────────────────────
-const EARLY_SEC = -29;   // more than 29 s ahead of schedule
-const LATE_SEC  =  329;  // more than 5 min 29 s behind schedule
+// ── DRT official on-time thresholds (seconds) ────────────────────
+const EARLY_SEC = -29;    // more than 29 s ahead of schedule
+const LATE_SEC  =  329;   // more than 5 min 29 s behind schedule
 
-// Default cruising speed when only one GPS fix is available yet.
-// 30 km/h is a typical urban bus speed between stops.
-const DEFAULT_SPEED_MPS = 30 / 3.6;   // 8.33 m/s
+// Speed constants
+const DEFAULT_SPEED_MPS = 30 / 3.6;   // 8.33 m/s — conservative urban fallback
+const MAX_SPEED_MPS     = 25;          // 90 km/h — above this we assume bad GPS
+const MIN_SPEED_MPS     = 0.5;         // 1.8 km/h — floor to keep ETA finite
 
-// Maximum plausible bus speed — reject GPS-delta speeds above this
-// (catches GPS jitter, teleports, stationary-bus noise).
-const MAX_SPEED_MPS = 25;             // 90 km/h
-
-// Minimum speed used for ETA calculation to avoid divide-by-zero
-// (bus is stopped or barely moving).
-const MIN_SPEED_MPS = 0.5;           // 1.8 km/h
-
-// Distance threshold: bus is considered AT a stop and already served it
+// A vehicle within this distance of a stop is considered to be AT it
 const AT_STOP_M = 80;
 
-// ── Persistent state ─────────────────────────────────────────────
+// ── Persistent globals ────────────────────────────────────────────
+// ontimeState: last computed status per vehicle_id
+// gpsHistory:  last GPS fix + wall-clock capture time per vehicle_id
 if (!global.ontimeState) global.ontimeState = {};
 if (!global.gpsHistory)  global.gpsHistory  = {};
 
-// ── haversine distance (metres) ──────────────────────────────────
+// ─────────────────────────────────────────────────────────────────
+// Utilities
+// ─────────────────────────────────────────────────────────────────
+
+/** Haversine distance in metres between two WGS-84 points. */
 function haversine(lat1, lon1, lat2, lon2) {
   const R  = 6_371_000;
   const f1 = lat1 * Math.PI / 180;
@@ -80,56 +76,113 @@ function haversine(lat1, lon1, lat2, lon2) {
 }
 
 /**
- * Convert a GTFS HH:MM:SS string to a Unix timestamp (seconds)
- * anchored to the correct service date.
- * Uses a ±6-hour window search so it works regardless of server
- * timezone and handles overnight trips (hours > 24).
+ * Convert a GTFS HH:MM:SS arrival_time string to a Unix timestamp.
+ * Uses a ±12-hour window around refTimestampSec to pick the correct
+ * service day regardless of server timezone or overnight trips.
+ *
+ * @param  {number} refTimestampSec  GPS fix timestamp (Unix seconds)
+ * @param  {string} hhmmss           Scheduled arrival, e.g. "14:32:00"
+ * @returns {number|null}
  */
 function scheduledToUnix(refTimestampSec, hhmmss) {
-  if (!refTimestampSec || !hhmmss) return null;
+  if (!refTimestampSec || !hhmmss || typeof hhmmss !== 'string') return null;
 
   const parts = hhmmss.split(':').map(Number);
   if (parts.length !== 3 || parts.some(isNaN)) return null;
-  const [h, m, s] = parts;
-  const scheduledSecOfDay = h * 3600 + m * 60 + s;
 
-  const DAY_SEC = 86400;
+  const [h, m, s]        = parts;
+  const scheduledSecOfDay = h * 3600 + m * 60 + s;
+  const DAY_SEC           = 86400;
+
   let best = null;
   let bestDiff = Infinity;
 
   for (let offset = -1; offset <= 1; offset++) {
-    const midnightCandidate =
-      Math.floor(refTimestampSec / DAY_SEC) * DAY_SEC + offset * DAY_SEC;
-    const candidate = midnightCandidate + scheduledSecOfDay;
-    const diff = Math.abs(candidate - refTimestampSec);
-    if (diff < bestDiff) {
-      bestDiff = diff;
-      best = candidate;
-    }
+    const midnightEst = Math.floor(refTimestampSec / DAY_SEC) * DAY_SEC + offset * DAY_SEC;
+    const candidate   = midnightEst + scheduledSecOfDay;
+    const diff        = Math.abs(candidate - refTimestampSec);
+    if (diff < bestDiff) { bestDiff = diff; best = candidate; }
   }
 
-  if (bestDiff > 12 * 3600) return null;
-  return best;
+  // Sanity: reject if more than 12 h away (wrong service day)
+  return bestDiff <= 12 * 3600 ? best : null;
 }
 
 /**
- * Derive the vehicle's current speed in m/s.
- * Priority: GPS delta → GTFS-RT reported → conservative default.
+ * Look up stop-time rows for a trip_id, tolerating the __ suffix
+ * that DRT's GTFS-RT feed appends to trip IDs.
  *
- * As a side-effect, updates global.gpsHistory[vehicleId] with the
- * current fix so the NEXT call can compute a delta.
+ * Search order:
+ *   1. store.stopTimesByTrip[tripId]          — exact match
+ *   2. store.stopTimesByTrip[normalized]      — strip __ suffix
+ *   3. store.stopTimesByTripNorm[normalized]  — alias index in db.js
+ *
+ * @returns {Array|null}
  */
-function deriveSpeed(vehicleId, lat, lon, ts, gtfsSpeedKmh) {
-  const prev = global.gpsHistory[vehicleId];
+function getStopTimesForTrip(tripId, store) {
+  if (!tripId) return null;
 
-  // Store current fix for next cycle BEFORE any early returns
-  global.gpsHistory[vehicleId] = { lat, lon, ts };
+  // 1. Exact match
+  const exact = store.stopTimesByTrip?.[tripId];
+  if (exact && exact.length) return exact;
 
-  if (prev && prev.ts && ts > prev.ts) {
-    const distM = haversine(prev.lat, prev.lon, lat, lon);
-    const dtSec = ts - prev.ts;
+  // 2. Strip suffix (e.g. "5608__2026-04" → "5608")
+  const normId = tripId.includes('__') ? tripId.split('__')[0] : null;
+  if (normId) {
+    const byNormKey = store.stopTimesByTrip?.[normId];
+    if (byNormKey && byNormKey.length) return byNormKey;
 
-    // Require at least 5 m of movement to filter stationary noise
+    const byNormIdx = store.stopTimesByTripNorm?.[normId];
+    if (byNormIdx && byNormIdx.length) return byNormIdx;
+  }
+
+  // 3. Try the alias index with the original id (covers the reverse case
+  //    where JSON keys have suffixes but RT ids are stripped)
+  const byAliasOrig = store.stopTimesByTripNorm?.[tripId];
+  if (byAliasOrig && byAliasOrig.length) return byAliasOrig;
+
+  return null;
+}
+
+// ─────────────────────────────────────────────────────────────────
+// Speed calculation
+// ─────────────────────────────────────────────────────────────────
+
+/**
+ * Derive the vehicle's speed in m/s from consecutive GPS fixes.
+ *
+ * KEY FIX (Bug 4): Uses wall-clock time (Date.now()) for the time
+ * delta, not the GPS timestamp. DRT's feed quantises vehicle
+ * timestamps to the minute, so ts_prev === ts_curr on the poll
+ * immediately after a quantisation boundary → GPS delta never fires.
+ * Wall-clock time is always strictly increasing between polls.
+ *
+ * Side-effect: updates global.gpsHistory[vehicleId].
+ *
+ * @param  {string}      vehicleId
+ * @param  {number}      lat           current latitude
+ * @param  {number}      lon           current longitude
+ * @param  {number}      gpsTs         GPS timestamp (Unix seconds)
+ * @param  {number|null} gtfsSpeedKmh  speed from GTFS-RT (km/h) or null
+ * @returns {{ speedMps, speedKmh, source, distM, dtSec }}
+ */
+function deriveSpeed(vehicleId, lat, lon, gpsTs, gtfsSpeedKmh) {
+  const nowMs  = Date.now();
+  const prev   = global.gpsHistory[vehicleId];
+
+  // Always update before returning so the NEXT call has a baseline
+  global.gpsHistory[vehicleId] = { lat, lon, gpsTs, capturedMs: nowMs };
+
+  if (prev) {
+    const distM  = haversine(prev.lat, prev.lon, lat, lon);
+
+    // Use wall-clock delta; fall back to GPS delta if wall clock is missing
+    const dtMs   = prev.capturedMs ? (nowMs - prev.capturedMs) : 0;
+    const dtSec  = dtMs > 0
+      ? dtMs / 1000
+      : (gpsTs > (prev.gpsTs || 0) ? gpsTs - prev.gpsTs : 0);
+
+    // Need at least 5 m of movement to reject stationary-bus noise
     if (distM > 5 && dtSec > 0) {
       const rawMps = distM / dtSec;
 
@@ -139,14 +192,14 @@ function deriveSpeed(vehicleId, lat, lon, ts, gtfsSpeedKmh) {
           speedKmh: Math.round(rawMps * 3.6 * 10) / 10,
           source:   'gps_delta',
           distM:    Math.round(distM),
-          dtSec,
+          dtSec:    Math.round(dtSec),
         };
       }
-      // Implausibly fast — fall through
+      // Speed implausibly high — GPS jitter or teleport, fall through
     }
   }
 
-  // GTFS-RT speed field (stored as km/h in server.js)
+  // GTFS-RT reported speed (stored as km/h in server.js)
   if (typeof gtfsSpeedKmh === 'number' && gtfsSpeedKmh > 0) {
     const mps = Math.min(gtfsSpeedKmh / 3.6, MAX_SPEED_MPS);
     return {
@@ -158,7 +211,7 @@ function deriveSpeed(vehicleId, lat, lon, ts, gtfsSpeedKmh) {
     };
   }
 
-  // Conservative urban default
+  // Last-resort urban default
   return {
     speedMps: DEFAULT_SPEED_MPS,
     speedKmh: Math.round(DEFAULT_SPEED_MPS * 3.6 * 10) / 10,
@@ -168,50 +221,62 @@ function deriveSpeed(vehicleId, lat, lon, ts, gtfsSpeedKmh) {
   };
 }
 
+// ─────────────────────────────────────────────────────────────────
+// Next-stop finder
+// ─────────────────────────────────────────────────────────────────
+
 /**
- * Find the NEXT stop the vehicle is heading toward on its trip.
+ * Find the next stop the vehicle is heading toward.
  *
- * Logic:
- *   1. Find the stop closest to the vehicle by distance.
- *   2. If the vehicle is within AT_STOP_M of that stop it is AT /
- *      just past it — return the next stop in sequence instead.
- *   3. Otherwise the closest stop IS the next target.
+ * 1. Build a distance-ranked list of all stops on the trip.
+ * 2. If the closest stop is ≤ AT_STOP_M away, the bus is at/past
+ *    it — return the next stop in sequence instead.
+ * 3. Otherwise the closest stop IS the next target.
  *
- * Returns { stopEntry, staticStop, distM } or null.
+ * @returns {{ stopEntry, staticStop, distM }} or null
  */
 function findNextStop(vLat, vLon, tripId, store) {
-  const tripStops = store.stopTimesByTrip?.[tripId];
+  const tripStops = getStopTimesForTrip(tripId, store);
   if (!tripStops || !tripStops.length) return null;
 
-  // Build enriched candidate list
   const candidates = [];
   for (const stopEntry of tripStops) {
-    const staticStop = store.stopsById[stopEntry.stop_id];
-    if (!staticStop) continue;
+    const staticStop = store.stopsById?.[stopEntry.stop_id];
+    if (!staticStop || isNaN(staticStop.stop_lat) || isNaN(staticStop.stop_lon)) continue;
     const distM = haversine(vLat, vLon, staticStop.stop_lat, staticStop.stop_lon);
     candidates.push({ stopEntry, staticStop, distM });
   }
 
   if (!candidates.length) return null;
 
-  // Nearest stop
   candidates.sort((a, b) => a.distM - b.distM);
   const nearest = candidates[0];
 
   if (nearest.distM <= AT_STOP_M) {
-    // Bus is AT this stop — find the next one in sequence
+    // Bus is AT this stop — look for the next one in sequence
     const nextInSeq = candidates
       .filter(c => c.stopEntry.stop_sequence > nearest.stopEntry.stop_sequence)
       .sort((a, b) => a.stopEntry.stop_sequence - b.stopEntry.stop_sequence)[0];
 
-    return nextInSeq || nearest; // if last stop, stay on nearest
+    return nextInSeq || nearest;   // at last stop → return nearest
   }
 
   return nearest;
 }
 
-/** Canonical unknown state object */
-function _unknownState() {
+// ─────────────────────────────────────────────────────────────────
+// Core evaluation
+// ─────────────────────────────────────────────────────────────────
+
+/** Classify a delay in seconds using DRT official thresholds. */
+function classify(delaySec) {
+  if (delaySec < EARLY_SEC) return 'early';
+  if (delaySec > LATE_SEC)  return 'late';
+  return 'on_time';
+}
+
+/** Canonical unknown-state object returned when evaluation cannot proceed. */
+function unknownState() {
   return {
     performance_status:  'unknown',
     delay_seconds:        null,
@@ -226,6 +291,7 @@ function _unknownState() {
     speed_source:         null,
     gps_delta_dist_m:     null,
     gps_delta_dt_sec:     null,
+    // Legacy field aliases (map.js popup reads these)
     matched_stop_id:      null,
     matched_stop_name:    null,
     matched_stop_dist_m:  null,
@@ -235,54 +301,47 @@ function _unknownState() {
 }
 
 /**
- * Classify a delay in seconds using DRT official thresholds.
- */
-function classify(delaySec) {
-  if (delaySec < EARLY_SEC) return 'early';
-  if (delaySec > LATE_SEC)  return 'late';
-  return 'on_time';
-}
-
-/**
- * Evaluate a single vehicle using GPS-projection ETA.
- * Mutates global.ontimeState[vehicle_id].
- * Returns the state object.
+ * Evaluate one vehicle.  Writes result into global.ontimeState[vid].
+ * Returns the state object (also written to vehicle in evaluateAll).
  */
 function evaluateVehicle(vehicle, store) {
   const vid    = vehicle.vehicle_id;
 
-  // Use raw (pre-snapping) GPS coordinates for accuracy
+  // Prefer raw (pre-snapping) coordinates for proximity maths
   const lat    = vehicle.raw_latitude  ?? vehicle.latitude;
   const lon    = vehicle.raw_longitude ?? vehicle.longitude;
-  const vTs    = vehicle.timestamp;   // Unix seconds of GPS fix
+  const gpsTs  = vehicle.timestamp;        // Unix seconds
   const tripId = vehicle.trip_id;
 
-  if (!lat || !lon || !vTs || !tripId) {
-    return global.ontimeState[vid] || _unknownState();
+  // Guard: can't do anything without GPS + trip assignment
+  if (!lat || !lon || !gpsTs || !tripId) {
+    return global.ontimeState[vid] || unknownState();
   }
 
-  // ── Speed ────────────────────────────────────────────────────
-  // vehicle.speed is stored as km/h by server.js
-  const speedInfo = deriveSpeed(vid, lat, lon, vTs, vehicle.speed ?? null);
+  // ── 1. Speed ─────────────────────────────────────────────────
+  // vehicle.speed is stored as km/h by server.js (converted from m/s on receipt)
+  const speedInfo = deriveSpeed(vid, lat, lon, gpsTs, vehicle.speed ?? null);
 
-  // ── Next stop ────────────────────────────────────────────────
+  // ── 2. Next stop ─────────────────────────────────────────────
   const match = findNextStop(lat, lon, tripId, store);
   if (!match) {
-    return global.ontimeState[vid] || _unknownState();
+    // No stop data for this trip — preserve sticky state or return unknown
+    return global.ontimeState[vid] || unknownState();
   }
 
   const { stopEntry, staticStop, distM } = match;
 
-  // ── ETA ──────────────────────────────────────────────────────
-  const effectiveSpeedMps = Math.max(speedInfo.speedMps, MIN_SPEED_MPS);
-  const travelTimeSec     = distM / effectiveSpeedMps;
-  const etaUnix           = vTs + travelTimeSec;
+  // ── 3. ETA ───────────────────────────────────────────────────
+  const effectiveMps  = Math.max(speedInfo.speedMps, MIN_SPEED_MPS);
+  const travelTimeSec = distM / effectiveMps;
+  const etaUnix       = gpsTs + travelTimeSec;
 
-  // ── Scheduled arrival ────────────────────────────────────────
-  const scheduledUnix = scheduledToUnix(vTs, stopEntry.arrival_time);
+  // ── 4. Scheduled arrival ─────────────────────────────────────
+  // stopEntry.arrival_time is always HH:MM:SS (db.js normalises this)
+  const scheduledUnix = scheduledToUnix(gpsTs, stopEntry.arrival_time);
 
   if (!scheduledUnix) {
-    // No schedule data — preserve previous state if available
+    // No valid schedule time — keep sticky state with refreshed speed/distance
     const prev = global.ontimeState[vid];
     if (prev) {
       return {
@@ -294,16 +353,17 @@ function evaluateVehicle(vehicle, store) {
         speed_source:        speedInfo.source,
         gps_delta_dist_m:    speedInfo.distM  ?? null,
         gps_delta_dt_sec:    speedInfo.dtSec  ?? null,
+        evaluated_at_ms:     Date.now(),
       };
     }
-    return _unknownState();
+    return unknownState();
   }
 
-  // ── Delay & classification ────────────────────────────────────
+  // ── 5. Delay & classification ─────────────────────────────────
   const delaySec = Math.round(etaUnix - scheduledUnix);
   const status   = classify(delaySec);
 
-  const newState = {
+  const state = {
     performance_status:  status,
     delay_seconds:       delaySec,
     eta_unix:            Math.round(etaUnix),
@@ -319,7 +379,7 @@ function evaluateVehicle(vehicle, store) {
     gps_delta_dist_m:    speedInfo.distM  ?? null,
     gps_delta_dt_sec:    speedInfo.dtSec  ?? null,
     evaluated_at_ms:     Date.now(),
-    // Legacy aliases so existing map.js popup code works unchanged
+    // Legacy aliases
     matched_stop_id:     stopEntry.stop_id,
     matched_stop_name:   staticStop.stop_name,
     matched_stop_dist_m: Math.round(distM),
@@ -327,55 +387,58 @@ function evaluateVehicle(vehicle, store) {
     between_stops:       distM > AT_STOP_M,
   };
 
-  global.ontimeState[vid] = newState;
-  return newState;
+  global.ontimeState[vid] = state;
+  return state;
 }
 
 /**
- * Evaluate all vehicles. Attaches all on-time, ETA, and speed fields
+ * Evaluate all vehicles and attach on-time, ETA, and speed fields
  * directly to each vehicle object in-place.
  *
- * @param {Object[]} vehicles - array of enriched vehicle objects (mutated)
- * @param {Object}   store    - db.store
+ * @param {Object[]} vehicles  Enriched vehicle objects from server.js (mutated)
+ * @param {Object}   store     db.store (stopsById, stopTimesByTrip, …)
  */
 function evaluateAll(vehicles, store) {
   for (const v of vehicles) {
-    const state = evaluateVehicle(v, store);
+    const s = evaluateVehicle(v, store);
 
-    v.performance_status   = state.performance_status;
-    v.delay_seconds        = state.delay_seconds;
+    // On-time classification
+    v.performance_status   = s.performance_status;
+    v.delay_seconds        = s.delay_seconds;
 
-    v.eta_unix             = state.eta_unix;
-    v.eta_seconds_away     = state.eta_seconds_away;
+    // ETA
+    v.eta_unix             = s.eta_unix;
+    v.eta_seconds_away     = s.eta_seconds_away;
 
-    v.next_stop_id         = state.next_stop_id;
-    v.next_stop_name       = state.next_stop_name;
-    v.next_stop_dist_m     = state.next_stop_dist_m;
-    v.next_stop_sequence   = state.next_stop_sequence;
+    // Next stop
+    v.next_stop_id         = s.next_stop_id;
+    v.next_stop_name       = s.next_stop_name;
+    v.next_stop_dist_m     = s.next_stop_dist_m;
+    v.next_stop_sequence   = s.next_stop_sequence;
 
-    v.calculated_speed_kmh = state.speed_kmh;
-    v.speed_source         = state.speed_source;
-    v.gps_delta_dist_m     = state.gps_delta_dist_m;
-    v.gps_delta_dt_sec     = state.gps_delta_dt_sec;
+    // Speed
+    v.calculated_speed_kmh = s.speed_kmh;
+    v.speed_source         = s.speed_source;
+    v.gps_delta_dist_m     = s.gps_delta_dist_m;
+    v.gps_delta_dt_sec     = s.gps_delta_dt_sec;
 
-    // Legacy aliases (map.js popup uses these names)
-    v.matched_stop_id      = state.matched_stop_id;
-    v.matched_stop_name    = state.matched_stop_name;
-    v.matched_stop_dist_m  = state.matched_stop_dist_m;
-    v.at_stop_sequence     = state.stop_sequence;
-    v.between_stops        = state.between_stops ?? true;
+    // Legacy field aliases (map.js popup reads these)
+    v.matched_stop_id      = s.matched_stop_id;
+    v.matched_stop_name    = s.matched_stop_name;
+    v.matched_stop_dist_m  = s.matched_stop_dist_m;
+    v.at_stop_sequence     = s.stop_sequence;
+    v.between_stops        = s.between_stops ?? true;
   }
 }
 
 /**
- * Prune stale entries from ontimeState and gpsHistory.
- * Call on a slow timer (every 5 min).
+ * Prune entries for vehicles not seen in the last 5 minutes.
+ * Call on a slow timer (e.g. every 5 min in server.js).
  */
 function pruneState() {
   const cutoff = Date.now() - 5 * 60_000;
   for (const vid of Object.keys(global.ontimeState)) {
-    const s = global.ontimeState[vid];
-    if (s.evaluated_at_ms && s.evaluated_at_ms < cutoff) {
+    if ((global.ontimeState[vid].evaluated_at_ms || 0) < cutoff) {
       delete global.ontimeState[vid];
       delete global.gpsHistory[vid];
     }

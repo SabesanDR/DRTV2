@@ -106,6 +106,48 @@ async function loadFromZip() {
   await loadTripsFromZip();
   await loadRoutesFromZip();
   await loadStopsFromZip();
+  await loadStopTimesFromZip();  // FIX: was missing — stopTimesByTrip was always empty on first run
+}
+
+// ── load stop_times from zip ──────────────────────────────────────
+// Required for ontimeEngine ETA calculation. Streams stop_times.txt
+// and groups rows by trip_id. Each entry has: trip_id, stop_id,
+// stop_sequence (int), arrival_time (HH:MM:SS string).
+async function loadStopTimesFromZip() {
+  return new Promise(resolve => {
+    const zip = fs.createReadStream(ZIP_PATH).pipe(unzipper.Parse({ forceStream: true }));
+    let handled = false;
+    zip.on('entry', async entry => {
+      if (entry.path !== 'stop_times.txt') { entry.autodrain(); return; }
+      handled = true;
+      const rl = readline.createInterface({ input: entry });
+      let header = null, idx = {}, count = 0;
+      const grouped = {};
+      rl.on('line', line => {
+        const cols = line.split(',');
+        if (!header) {
+          header = cols;
+          cols.forEach((c, i) => { idx[c.trim()] = i; });
+          return;
+        }
+        const trip_id      = cols[idx.trip_id]?.trim();
+        const stop_id      = cols[idx.stop_id]?.trim();
+        const arrival_time = cols[idx.arrival_time]?.trim() || cols[idx.departure_time]?.trim() || '';
+        const seq          = parseInt(cols[idx.stop_sequence], 10);
+        if (!trip_id || !stop_id) return;
+        if (!grouped[trip_id]) grouped[trip_id] = [];
+        grouped[trip_id].push({ trip_id, stop_id, stop_sequence: seq, arrival_time });
+        count++;
+      });
+      rl.on('close', () => {
+        store.stopTimes = grouped;
+        console.log(`  Loaded ${count} stop_time rows across ${Object.keys(grouped).length} trips`);
+        resolve();
+      });
+    });
+    zip.on('finish', () => { if (!handled) resolve(); });
+    zip.on('error', () => resolve());
+  });
 }
 
 async function loadShapesFromZip() {
@@ -234,43 +276,80 @@ async function loadStopsFromZip() {
 
 // ------------------------------------------------------------
 // Build stopTimesByTrip index
-// Handles object-based stop_times.json safely
+//
+// Handles three different stop_times.json shapes:
+//   A) Already keyed by trip_id, each value is an array of rows
+//   B) Flat object whose values each have a trip_id field
+//   C) Raw array of rows (future-proofing)
+//
+// Also normalises each row so ontimeEngine always sees:
+//   arrival_time   — HH:MM:SS string (converted from arrival_time_sec if needed)
+//   stop_sequence  — integer
+//
+// Builds TWO indexes:
+//   store.stopTimesByTrip        — keyed by the raw trip_id in the JSON
+//   store.stopTimesByTripNorm    — keyed by the normalized trip_id
+//     (strips __... suffix that DRT's GTFS-RT feed appends)
+// ontimeEngine looks up both so it works regardless of whether
+// the JSON was built from a feed with or without suffixes.
 // ------------------------------------------------------------
 function buildStopTimesByTrip() {
-  store.stopTimesByTrip = {};
+  store.stopTimesByTrip     = {};
+  store.stopTimesByTripNorm = {};
 
   const stopTimesRaw = store.stopTimes || {};
 
-  // If stopTimes is already keyed by trip_id → use it directly
-  if (!Array.isArray(stopTimesRaw)) {
+  function addEntry(tripId, row) {
+    // Ensure arrival_time is always an HH:MM:SS string
+    if (!row.arrival_time && row.arrival_time_sec != null) {
+      const sec  = row.arrival_time_sec;
+      const h    = Math.floor(sec / 3600);
+      const m    = Math.floor((sec % 3600) / 60);
+      const s    = sec % 60;
+      row = { ...row, arrival_time: `${String(h).padStart(2,'0')}:${String(m).padStart(2,'0')}:${String(s).padStart(2,'0')}` };
+    }
+    // Ensure stop_sequence is a number
+    if (typeof row.stop_sequence !== 'number') {
+      row = { ...row, stop_sequence: parseInt(row.stop_sequence, 10) || 0 };
+    }
+
+    if (!store.stopTimesByTrip[tripId]) store.stopTimesByTrip[tripId] = [];
+    store.stopTimesByTrip[tripId].push(row);
+
+    // Also index under normalized trip_id (strip __ suffix)
+    const normId = tripId.split('__')[0];
+    if (normId !== tripId) {
+      if (!store.stopTimesByTripNorm[normId]) store.stopTimesByTripNorm[normId] = [];
+      store.stopTimesByTripNorm[normId].push(row);
+    }
+  }
+
+  if (Array.isArray(stopTimesRaw)) {
+    // Shape C: flat array
+    for (const row of stopTimesRaw) {
+      if (row.trip_id) addEntry(row.trip_id, row);
+    }
+  } else {
     for (const [key, value] of Object.entries(stopTimesRaw)) {
-      // Case: already grouped by trip_id
       if (Array.isArray(value)) {
-        store.stopTimesByTrip[key] = value.slice().sort(
-          (a, b) => a.stop_sequence - b.stop_sequence
-        );
-      }
-      // Case: flat object entries
-      else if (value.trip_id) {
-        if (!store.stopTimesByTrip[value.trip_id]) {
-          store.stopTimesByTrip[value.trip_id] = [];
-        }
-        store.stopTimesByTrip[value.trip_id].push(value);
+        // Shape A: already grouped
+        for (const row of value) addEntry(key, row);
+      } else if (value && value.trip_id) {
+        // Shape B: flat object entries
+        addEntry(value.trip_id, value);
       }
     }
   }
 
-  // Final ordering safeguard
-  for (const tripId in store.stopTimesByTrip) {
-    store.stopTimesByTrip[tripId].sort(
-      (a, b) => a.stop_sequence - b.stop_sequence
-    );
-  }
+  // Sort all arrays by stop_sequence
+  const sortBySeq = arr => arr.sort((a, b) => a.stop_sequence - b.stop_sequence);
+  for (const tripId in store.stopTimesByTrip)     sortBySeq(store.stopTimesByTrip[tripId]);
+  for (const tripId in store.stopTimesByTripNorm) sortBySeq(store.stopTimesByTripNorm[tripId]);
 
+  const rawCount  = Object.keys(store.stopTimesByTrip).length;
+  const normCount = Object.keys(store.stopTimesByTripNorm).length;
   console.log(
-    '[GTFS] stopTimesByTrip built:',
-    Object.keys(store.stopTimesByTrip).length,
-    'trips'
+    `[GTFS] stopTimesByTrip built: ${rawCount} trips (+ ${normCount} normalized-id aliases)`
   );
 }
 

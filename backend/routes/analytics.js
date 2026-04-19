@@ -12,6 +12,24 @@ const express = require('express');
 const router  = express.Router();
 const db      = require('../db');
 
+// ───────────────────────────────────────────────────────────────
+// Safety guard — prevents infinite analytics calculations
+// ───────────────────────────────────────────────────────────────
+function ensureData(res) {
+  if (
+    !db.store ||
+    !db.store.stopTimesByTrip ||
+    !db.store.routesById
+  ) {
+    res.json({
+      status: "no-data",
+      message: "GTFS static data not ready"
+    });
+    return false;
+  }
+  return true;
+}
+
 /* ───────────────────────────────────────────────────────────────
    Helper functions
 ─────────────────────────────────────────────────────────────── */
@@ -79,6 +97,7 @@ function classifyArrivalBySeconds(deltaSec) {
 ─────────────────────────────────────────────────────────────── */
 
 router.get('/overview', (_req, res) => {
+  if (!ensureData(res)) return;
   const vehicles    = global.cache.vehicles || [];
   const tripUpdates = global.cache.tripUpdates || [];
   const alerts      = global.cache.alerts || [];
@@ -115,7 +134,7 @@ router.get('/overview', (_req, res) => {
 
     if (!scheduledUnix) continue;
 
-    const deltaSec = actualUnix - scheduledUnix;
+   if (!Number.isFinite(deltaSec)) continue;
     const status = classifyArrivalBySeconds(deltaSec);
 
     if (status === 'late') late++;
@@ -237,6 +256,7 @@ res.json({
 ─────────────────────────────────────────────────────────────── */
 
 router.get('/on-time', (_req, res) => {
+  if (!ensureData(res)) return;
   const tripUpdates = global.cache.tripUpdates || [];
   const store = db.store;
 
@@ -274,8 +294,7 @@ const scheduledUnix =
   );
 
 if (!scheduledUnix) continue;
-
-const deltaSec = actualUnix - scheduledUnix;
+if (!Number.isFinite(deltaSec)) continue;
 const status = classifyArrivalBySeconds(deltaSec);
 
 
@@ -319,6 +338,7 @@ const status = classifyArrivalBySeconds(deltaSec);
 ─────────────────────────────────────────────────────────────── */
 
 router.get('/on-time/debug', (_req, res) => {
+  if (!ensureData(res)) return;
   const tripUpdates = global.cache.tripUpdates || [];
   const store = db.store;
 
@@ -354,7 +374,7 @@ const scheduledUnix =
     staticStop.arrival_time
   );
 
-const deltaSec = actualUnix - scheduledUnix;
+if (!Number.isFinite(deltaSec)) continue;
 const status = classifyArrivalBySeconds(deltaSec);
 
     rows.push({
@@ -390,6 +410,7 @@ const status = classifyArrivalBySeconds(deltaSec);
 ─────────────────────────────────────────────────────────────── */
 
 router.get('/headway', (_req, res) => {
+    if (!ensureData(res)) return;
   const vehicles = global.cache.vehicles || [];
   const store = db.store;
 
@@ -417,9 +438,11 @@ router.get('/headway', (_req, res) => {
     const vehicleCount = routeVehicles.length;
 
     // Sort vehicles in a consistent order
-    routeVehicles.sort((a, b) =>
-      (a.timestamp || 0) - (b.timestamp || 0)
-    );
+  routeVehicles.sort((a, b) => {
+    if (!a.timestamp || !b.timestamp) return 0;
+    return a.timestamp - b.timestamp;
+  });
+
 
     const distances = [];
 
@@ -483,6 +506,7 @@ rows.push({
 ─────────────────────────────────────────────────────────────── */
 
 router.get('/fleet', (_req, res) => {
+  if (!ensureData(res)) return;
   const vehicles = global.cache.vehicles || [];
   const store = db.store;
 
@@ -523,16 +547,32 @@ router.get('/fleet', (_req, res) => {
 });
 
 /* ───────────────────────────────────────────────────────────────
-   GET /api/analytics/stops
-   Top delayed and busiest stops (GTFS-accurate)
+   GET /api/analytics/rt-sanity
+   To check what data is available in GTFS-RT feed (for debugging and development)
 ─────────────────────────────────────────────────────────────── */
+router.get('/rt-sanity', (_req, res) => {
+  const tripUpdates = global.cache.tripUpdates || [];
 
+  res.json({
+    tripUpdates_total: tripUpdates.length,
+    with_trip_id: tripUpdates.filter(u => !!u.trip_id).length,
+    with_stop_updates: tripUpdates.filter(u => u.stop_updates?.length).length,
+    with_arrival_time: tripUpdates.filter(
+      u => u.stop_updates?.[0]?.arrival_time
+    ).length,
+    with_departure_time: tripUpdates.filter(
+      u => u.stop_updates?.[0]?.departure_time
+    ).length,
+    sample: tripUpdates.slice(0, 2)
+  });
+});
 /* ───────────────────────────────────────────────────────────────
    GET /api/analytics/stops
    Top delayed and busiest stops (GTFS-accurate)
 ─────────────────────────────────────────────────────────────── */
 
 router.get('/stops', (_req, res) => {
+  if (!ensureData(res)) return;
   const tripUpdates = global.cache.tripUpdates || [];
   const store = db.store;
 
@@ -645,7 +685,13 @@ return {
 ─────────────────────────────────────────────────────────────── */
 
 router.get('/delay-trend', (_req, res) => {
+  if (!ensureData(res)) return;
   const tripUpdates = global.cache.tripUpdates || [];
+
+// ── HARD SAFETY CAP (prevents calculating forever)
+const MAX_RT = 1500;
+const recentTripUpdates = tripUpdates.slice(-MAX_RT);
+
   const store = db.store;
 
   const now = Date.now();
@@ -660,7 +706,7 @@ router.get('/delay-trend', (_req, res) => {
 
     const deltas = [];
 
-    for (const u of tripUpdates) {
+    for (const u of recentTripUpdates) {
       if (!u.trip_id || !u.stop_updates?.length) continue;
       if (!u.timestamp) continue;
 
