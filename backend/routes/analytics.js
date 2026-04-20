@@ -103,43 +103,39 @@ router.get('/overview', (_req, res) => {
   const alerts      = global.cache.alerts || [];
   const store       = db.store;
 
-  // ✅ Accurate on‑time calculation (same as /on-time)
-  let late = 0;
-  let early = 0;
-  let onTime = 0;
+  // ── On-time calculation ──────────────────────────────────────
+  // PRIMARY: use performance_status from ontimeEngine (set on every vehicle
+  // each poll cycle via GPS-projection ETA). Always available, real-time.
+  let late = 0, early = 0, onTime = 0;
 
-  for (const u of tripUpdates) {
-    if (!u.trip_id || !u.stop_updates?.length) continue;
+  for (const v of vehicles) {
+    if (v.performance_status === 'late')    late++;
+    else if (v.performance_status === 'early')   early++;
+    else if (v.performance_status === 'on_time') onTime++;
+  }
 
-    const stopTimes = store.stopTimesByTrip[u.trip_id];
-    if (!stopTimes) continue;
-
-    const rtStop = u.stop_updates[0];
-    const actualUnix = rtStop.arrival_time;
-    if (actualUnix === null || actualUnix === undefined) continue;
-
-    let staticStop = stopTimes.find(
-      s => s.stop_sequence === rtStop.stop_sequence
-    );
-
-    if (!staticStop) {
-      staticStop = stopTimes.find(
-        s => s.stop_id === rtStop.stop_id
-      );
+  // FALLBACK: if engine hasn't run yet (e.g. first boot before stop_times loaded),
+  // use tripUpdates static-GTFS join instead.
+  if (late + early + onTime === 0) {
+    for (const u of tripUpdates) {
+      if (!u.trip_id || !u.stop_updates?.length) continue;
+      const stopTimes = store.stopTimesByTrip[u.trip_id];
+      if (!stopTimes) continue;
+      const rtStop = u.stop_updates[0];
+      const actualUnix = rtStop.arrival_time;
+      if (actualUnix == null) continue;
+      let staticStop = stopTimes.find(s => s.stop_sequence === rtStop.stop_sequence)
+                    || stopTimes.find(s => s.stop_id === rtStop.stop_id);
+      if (!staticStop?.arrival_time) continue;
+      const scheduledUnix = scheduledStopTimeToUnix(actualUnix, staticStop.arrival_time);
+      if (!scheduledUnix) continue;
+      const deltaSec = actualUnix - scheduledUnix;
+      if (!Number.isFinite(deltaSec)) continue;
+      const status = classifyArrivalBySeconds(deltaSec);
+      if (status === 'late')         late++;
+      else if (status === 'early')   early++;
+      else                           onTime++;
     }
-    if (!staticStop || !staticStop.arrival_time) continue;
-
-    const scheduledUnix =
-      scheduledStopTimeToUnix(actualUnix, staticStop.arrival_time);
-
-    if (!scheduledUnix) continue;
-
-   if (!Number.isFinite(deltaSec)) continue;
-    const status = classifyArrivalBySeconds(deltaSec);
-
-    if (status === 'late') late++;
-    else if (status === 'early') early++;
-    else onTime++;
   }
 
   const totalTripsMeasured = late + early + onTime;
@@ -294,6 +290,7 @@ const scheduledUnix =
   );
 
 if (!scheduledUnix) continue;
+const deltaSec = actualUnix - scheduledUnix;
 if (!Number.isFinite(deltaSec)) continue;
 const status = classifyArrivalBySeconds(deltaSec);
 
@@ -374,6 +371,8 @@ const scheduledUnix =
     staticStop.arrival_time
   );
 
+if (!scheduledUnix) continue;
+const deltaSec = actualUnix - scheduledUnix;
 if (!Number.isFinite(deltaSec)) continue;
 const status = classifyArrivalBySeconds(deltaSec);
 

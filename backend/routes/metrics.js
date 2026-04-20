@@ -9,8 +9,25 @@ router.get('/', (_req, res) => {
   const alerts      = global.cache.alerts      || [];
   const store       = db.store;
 
-  const delays = tripUpdates.map(u => u.arrival_delay || 0);
-  const onTime = delays.filter(d => Math.abs(d) <= 300).length;
+  // Use ontimeEngine performance_status (set on every vehicle each poll).
+  // Fall back to tripUpdates delay arithmetic if no engine data yet.
+  let onTimePct = null;
+  const withStatus = vehicles.filter(v =>
+    v.performance_status === 'on_time' ||
+    v.performance_status === 'early'   ||
+    v.performance_status === 'late'
+  );
+
+  if (withStatus.length > 0) {
+    const onTimeV = withStatus.filter(v => v.performance_status === 'on_time').length;
+    onTimePct = Math.round(onTimeV / withStatus.length * 100);
+  } else if (tripUpdates.length > 0) {
+    const delays = tripUpdates.map(u => u.arrival_delay || 0);
+    const onTimeT = delays.filter(d => d >= -29 && d <= 329).length;
+    onTimePct = delays.length ? Math.round(onTimeT / delays.length * 100) : null;
+  }
+
+  const lateVehicles = vehicles.filter(v => v.performance_status === 'late').length;
 
   res.json({
     // Legacy shape (map.js reads this)
@@ -20,11 +37,11 @@ router.get('/', (_req, res) => {
       activeVehicles: vehicles.length,
       activeRoutes:   new Set(vehicles.map(v => v.route_id).filter(Boolean)).size,
       activeAlerts:   alerts.length,
-      delayedTrips:   delays.filter(d => d > 300).length,
+      delayedTrips:   lateVehicles,
       totalRoutes:    store.routesList.length,
       totalStops:     Object.keys(store.stopsById).length,
       totalTrips:     Object.keys(store.tripsById).length,
-      onTimePercent:  delays.length ? Math.round(onTime / delays.length * 100) : null,
+      onTimePercent:  onTimePct,
     },
     lastUpdated: global.cache.lastUpdated,
   });
