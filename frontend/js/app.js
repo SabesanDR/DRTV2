@@ -55,16 +55,56 @@ async function apiFetch(path, opts) {
   }
 }
 
+// ── Smart formatters ──────────────────────────────────────────────
+
+/** Delay seconds → human string. e.g. "+2 min 14s", "1 hr 4 min early", "On time" */
 function fmtDelay(sec) {
   if (sec == null || isNaN(sec)) return '–';
-  const m = Math.round(sec / 60);
-  if (m === 0) return 'On time';
-  return (m > 0 ? '+' : '') + m + ' min';
+  const abs = Math.abs(sec);
+  if (abs < 30) return 'On time';
+  const sign = sec > 0 ? '+' : '−';
+  return sign + fmtDuration(abs);
 }
+
+/** Seconds → compact duration. "45s" / "3 min 12s" / "1 hr 4 min" */
+function fmtDuration(sec) {
+  if (sec == null || isNaN(sec)) return '–';
+  sec = Math.round(Math.abs(sec));
+  if (sec < 60)        return `${sec}s`;
+  const totalMin = Math.floor(sec / 60);
+  const remSec   = sec % 60;
+  if (totalMin < 60) {
+    return remSec > 0 ? `${totalMin} min ${remSec}s` : `${totalMin} min`;
+  }
+  const hrs  = Math.floor(totalMin / 60);
+  const mins = totalMin % 60;
+  return mins > 0 ? `${hrs} hr ${mins} min` : `${hrs} hr`;
+}
+
+/** Metres → "450 m" or "2.4 km" */
+function fmtDist(m) {
+  if (m == null || isNaN(m)) return '–';
+  m = Math.round(m);
+  if (m < 1000) return `${m} m`;
+  return `${(m / 1000).toFixed(m < 10000 ? 1 : 0)} km`;
+}
+
+/** Age in seconds → "12s ago" / "4 min ago" / "1 hr 2 min ago" */
 function fmtAge(sec) {
   if (sec == null) return '–';
-  if (sec < 60) return sec + 's ago';
-  return Math.floor(sec / 60) + 'm ago';
+  if (sec < 60)    return `${sec}s ago`;
+  const totalMin = Math.floor(sec / 60);
+  if (totalMin < 60) return `${totalMin} min ago`;
+  const hrs  = Math.floor(totalMin / 60);
+  const mins = totalMin % 60;
+  return mins > 0 ? `${hrs} hr ${mins} min ago` : `${hrs} hr ago`;
+}
+
+/** ETA seconds → "Now" / "2 min 14s" / "1 hr 4 min" */
+function fmtEta(sec) {
+  if (sec == null || isNaN(sec)) return '–';
+  if (sec < 10) return 'Now';
+  return fmtDuration(sec);
 }
 
 // ── dashboard ─────────────────────────────────────────────────────
@@ -90,21 +130,35 @@ async function refreshDashboard() {
 
 function renderKPIs(d) {
   setText('kpi-vehicles',    d.vehicles ?? '–');
-  setText('kpi-vehicles-sub', `${d.dataQuality?.staleVehicles ?? 0} stale`);
+  setText('kpi-vehicles-sub', `${d.dataQuality?.staleVehicles ?? 0} stale · ${d.dataQuality?.snappedVehicles ?? 0} snapped`);
   setText('kpi-routes',      d.activeRoutes ?? '–');
   setText('kpi-total-routes', d.totalRoutes ?? '–');
-  setText('kpi-ontime',      d.onTimePercent != null ? d.onTimePercent + '%' : '–');
-  setText('kpi-ontime-sub',  d.feedLatency?.vehicles_age_sec != null
-    ? fmtAge(d.feedLatency.vehicles_age_sec) : '');
-  setText('kpi-delayed',     d.delayedTrips ?? '–');
-  setText('kpi-avg-delay',   d.avgDelayMinutes != null ? d.avgDelayMinutes : '–');
-  setText('kpi-alerts',      d.alerts ?? '0');
-  setText('kpi-snapped',     d.dataQuality?.snappedPercent != null
+
+  // On-time: show percent + breakdown (e.g. "78%  ·  12 late · 3 early")
+  const pct = d.onTimePercent;
+  const total = d.totalTripsMeasured || 0;
+  setText('kpi-ontime', pct != null ? pct + '%' : '–');
+  if (total > 0) {
+    const parts = [];
+    if (d.delayedTrips)  parts.push(`${d.delayedTrips} late`);
+    if (d.earlyTrips)    parts.push(`${d.earlyTrips} early`);
+    if (d.onTimeTrips)   parts.push(`${d.onTimeTrips} on time`);
+    setText('kpi-ontime-sub', parts.join(' · ') || `${total} measured`);
+  } else {
+    setText('kpi-ontime-sub', d.feedLatency?.vehicles_age_sec != null
+      ? fmtAge(d.feedLatency.vehicles_age_sec) : 'No data yet');
+  }
+
+  setText('kpi-delayed',   d.delayedTrips ?? '–');
+  setText('kpi-avg-delay', d.avgDelayMinutes != null
+    ? fmtDuration(d.avgDelayMinutes * 60) : '–');
+  setText('kpi-alerts',    d.alerts ?? '0');
+  setText('kpi-snapped',   d.dataQuality?.snappedPercent != null
     ? d.dataQuality.snappedPercent + '%' : '–');
 
   const dot = document.querySelector('.status-dot');
-  if (dot) { dot.className = 'status-dot live'; }
-  setText('statusText', `${d.vehicles ?? 0} vehicles`);
+  if (dot) dot.className = 'status-dot live';
+  setText('statusText', `${d.vehicles ?? 0} vehicles · ${pct != null ? pct + '% on time' : 'calculating…'}`);
 }
 
 function renderQuality(d) {
@@ -300,11 +354,15 @@ function setText(id, val) {
   if (el) el.textContent = val;
 }
 
-// expose for map.js
+// expose for map.js, presentation.js, analytics.js
 window.openFlagModal  = openFlagModal;
 window.closeFlagModal = closeFlagModal;
 window.submitFlag     = submitFlag;
 window.fmtDelay       = fmtDelay;
+window.fmtDuration    = fmtDuration;
+window.fmtDist        = fmtDist;
+window.fmtAge         = fmtAge;
+window.fmtEta         = fmtEta;
 window.apiFetch       = apiFetch;
 window.goToRoute      = goToRoute;
 window.global_vehicles_cache = [];

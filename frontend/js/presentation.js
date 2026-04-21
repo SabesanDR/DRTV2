@@ -344,20 +344,22 @@ function renderPresentationLateBuses(lateVehicles) {
     <div class="late-buses-title">🚨 Late Buses (${lateVehicles.length})</div>
     ${Object.entries(byRoute)
       .sort((a, b) => {
-        const maxA = Math.max(...a[1].map(v => v.delay_seconds));
-        const maxB = Math.max(...b[1].map(v => v.delay_seconds));
+        const maxA = Math.max(...a[1].map(v => v.delay_seconds ?? 0));
+        const maxB = Math.max(...b[1].map(v => v.delay_seconds ?? 0));
         return maxB - maxA;
       })
       .map(([routeId, buses]) => {
-        const maxDelay = Math.max(...buses.map(v => v.delay_seconds));
-        const delayMin = Math.round(maxDelay / 60);
+        const maxDelay = Math.max(...buses.map(v => v.delay_seconds ?? 0));
+        const _fmtDur  = window.fmtDuration || (s => `${Math.round(s/60)} min`);
+        const _fmtDist = window.fmtDist     || (m => m < 1000 ? `${m} m` : `${(m/1000).toFixed(1)} km`);
+        const delayStr = _fmtDur(maxDelay);
         const stopHint = buses[0]?.matched_stop_name
-          ? `<span class="pres-late-stop" style="font-size:.65rem;color:#64748b;display:block;">near ${buses[0].matched_stop_name}</span>`
+          ? `<span class="pres-late-stop" style="font-size:.65rem;color:#64748b;display:block;">near ${buses[0].matched_stop_name}${buses[0].matched_stop_dist_m != null ? ' · ' + _fmtDist(buses[0].matched_stop_dist_m) : ''}</span>`
           : '';
         return `<div class="pres-late-row">
           <span class="pres-late-pill">${routeId}</span>
           <span class="pres-late-detail">${buses.length} bus${buses.length > 1 ? 'es' : ''}${stopHint}</span>
-          <span class="pres-late-delay">+${delayMin} min</span>
+          <span class="pres-late-delay">+${delayStr}</span>
         </div>`;
       }).join('')}
   `;

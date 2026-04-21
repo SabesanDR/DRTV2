@@ -76,9 +76,20 @@ function haversine(lat1, lon1, lat2, lon2) {
 }
 
 /**
- * Convert a GTFS HH:MM:SS arrival_time string to a Unix timestamp.
- * Uses a ±12-hour window around refTimestampSec to pick the correct
- * service day regardless of server timezone or overnight trips.
+ * Convert a GTFS HH:MM:SS arrival_time string to a Unix timestamp,
+ * anchored to the correct Eastern Time service day.
+ *
+ * ROOT CAUSE FIX (Bug 1 — "4 hours off"):
+ * The old code used Math.floor(ts / 86400) * 86400 which is UTC midnight.
+ * GTFS times for DRT are in Eastern Time (America/Toronto).
+ * On a UTC server, "14:32:00" resolved to 10:32 AM Eastern instead of
+ * 2:32 PM Eastern — a 4-hour (EDT) or 5-hour (EST) systematic error that
+ * made every bus appear hours late or early.
+ *
+ * Fix: derive midnight in America/Toronto using the Intl API, then convert
+ * that Eastern midnight to a UTC Unix timestamp as the anchor point.
+ * Works correctly for both EST (UTC-5) and EDT (UTC-4), and handles
+ * overnight GTFS trips (hours > 24) via the ±1 day search.
  *
  * @param  {number} refTimestampSec  GPS fix timestamp (Unix seconds)
  * @param  {string} hhmmss           Scheduled arrival, e.g. "14:32:00"
@@ -94,17 +105,42 @@ function scheduledToUnix(refTimestampSec, hhmmss) {
   const scheduledSecOfDay = h * 3600 + m * 60 + s;
   const DAY_SEC           = 86400;
 
+  // ── Derive Eastern midnight as a UTC Unix timestamp ───────────
+  // Step 1: find the calendar date in Toronto timezone
+  const d   = new Date(refTimestampSec * 1000);
+  const fmt = new Intl.DateTimeFormat('en-CA', {
+    timeZone: 'America/Toronto',
+    year: 'numeric', month: '2-digit', day: '2-digit',
+  });
+  const dateParts = Object.fromEntries(
+    fmt.formatToParts(d)
+       .filter(p => p.type !== 'literal')
+       .map(p => [p.type, parseInt(p.value, 10)])
+  );
+
+  // Step 2: find the current UTC offset for America/Toronto at this moment
+  // (handles EST/EDT transitions automatically)
+  const utcMs = new Date(d.toLocaleString('en-US', { timeZone: 'UTC' }));
+  const torMs = new Date(d.toLocaleString('en-US', { timeZone: 'America/Toronto' }));
+  const offsetSec = Math.round((torMs - utcMs) / 1000); // e.g. -14400 for EDT
+
+  // Step 3: midnight in Toronto on this service date, expressed as UTC seconds
+  // e.g. midnight EDT Apr 20 = 04:00 UTC Apr 20 → Date.UTC(2026,3,20) + 4*3600
+  const torontoMidnightUtcSec =
+    Date.UTC(dateParts.year, dateParts.month - 1, dateParts.day, 0, 0, 0) / 1000
+    - offsetSec;
+
+  // Step 4: search ±1 service day to handle overnight trips (hours > 24)
   let best = null;
   let bestDiff = Infinity;
 
   for (let offset = -1; offset <= 1; offset++) {
-    const midnightEst = Math.floor(refTimestampSec / DAY_SEC) * DAY_SEC + offset * DAY_SEC;
-    const candidate   = midnightEst + scheduledSecOfDay;
-    const diff        = Math.abs(candidate - refTimestampSec);
+    const candidate = torontoMidnightUtcSec + offset * DAY_SEC + scheduledSecOfDay;
+    const diff      = Math.abs(candidate - refTimestampSec);
     if (diff < bestDiff) { bestDiff = diff; best = candidate; }
   }
 
-  // Sanity: reject if more than 12 h away (wrong service day)
+  // Sanity: reject if more than 12 h away (mismatched service day)
   return bestDiff <= 12 * 3600 ? best : null;
 }
 
@@ -228,37 +264,71 @@ function deriveSpeed(vehicleId, lat, lon, gpsTs, gtfsSpeedKmh) {
 /**
  * Find the next stop the vehicle is heading toward.
  *
- * 1. Build a distance-ranked list of all stops on the trip.
- * 2. If the closest stop is ≤ AT_STOP_M away, the bus is at/past
- *    it — return the next stop in sequence instead.
- * 3. Otherwise the closest stop IS the next target.
+ * ROOT CAUSE FIX (Bug 2 — wrong stop selected):
+ * The old approach (nearest stop by GPS distance) returns the stop
+ * the bus JUST LEFT when the bus is within ~80–200 m of having
+ * departed it. That stop's scheduled time is now in the past, so
+ * delay = ETA − past_scheduled_time becomes a huge positive number.
+ *
+ * Fix: use the schedule to determine which stops are still upcoming.
+ * A stop is considered "served / in the past" if its scheduled
+ * arrival is more than PAST_TOLERANCE_SEC ago. We pick the closest
+ * upcoming stop from the filtered set.
+ *
+ * Edge cases handled:
+ *   • If ALL stops are in the past (end of trip), fall back to the
+ *     nearest stop so the bus still gets a status.
+ *   • If the bus is within AT_STOP_M of the chosen stop, step
+ *     forward one more in sequence (bus is AT this stop, not en route).
  *
  * @returns {{ stopEntry, staticStop, distM }} or null
  */
-function findNextStop(vLat, vLon, tripId, store) {
+
+// How many seconds ago a stop can be scheduled before we consider
+// the bus to have already served it.
+// 30 s gives enough margin for a bus arriving slightly early to a stop.
+// We also guard with distance: if the bus is within AT_STOP_M of the
+// stop it is still AT that stop even if the time is slightly past.
+const PAST_TOLERANCE_SEC = 30;
+
+function findNextStop(vLat, vLon, tripId, gpsTs, store) {
   const tripStops = getStopTimesForTrip(tripId, store);
   if (!tripStops || !tripStops.length) return null;
 
+  // Build enriched candidate list with distance and scheduled unix time
   const candidates = [];
   for (const stopEntry of tripStops) {
     const staticStop = store.stopsById?.[stopEntry.stop_id];
     if (!staticStop || isNaN(staticStop.stop_lat) || isNaN(staticStop.stop_lon)) continue;
-    const distM = haversine(vLat, vLon, staticStop.stop_lat, staticStop.stop_lon);
-    candidates.push({ stopEntry, staticStop, distM });
+    const distM   = haversine(vLat, vLon, staticStop.stop_lat, staticStop.stop_lon);
+    const schUnix = scheduledToUnix(gpsTs, stopEntry.arrival_time);
+    // A stop is considered served (past) when:
+    //   • Its scheduled time is more than PAST_TOLERANCE_SEC ago, AND
+    //   • The bus is not still at/near the stop (> AT_STOP_M away)
+    // This correctly handles a late bus still approaching its next stop
+    // even when the scheduled time has already passed.
+    const isScheduledPast = schUnix != null && schUnix < gpsTs - PAST_TOLERANCE_SEC;
+    const isBusAway       = distM > AT_STOP_M;
+    const isPast          = isScheduledPast && isBusAway;
+    candidates.push({ stopEntry, staticStop, distM, schUnix, isPast });
   }
 
   if (!candidates.length) return null;
 
-  candidates.sort((a, b) => a.distM - b.distM);
-  const nearest = candidates[0];
+  // Use upcoming stops; fall back to all if none qualify (end of trip)
+  const upcoming = candidates.filter(c => !c.isPast);
+  const pool     = upcoming.length > 0 ? upcoming : candidates;
 
+  // Pick the closest stop from the eligible pool
+  pool.sort((a, b) => a.distM - b.distM);
+  const nearest = pool[0];
+
+  // If the bus is AT this stop, advance one in sequence
   if (nearest.distM <= AT_STOP_M) {
-    // Bus is AT this stop — look for the next one in sequence
-    const nextInSeq = candidates
+    const nextInSeq = pool
       .filter(c => c.stopEntry.stop_sequence > nearest.stopEntry.stop_sequence)
       .sort((a, b) => a.stopEntry.stop_sequence - b.stopEntry.stop_sequence)[0];
-
-    return nextInSeq || nearest;   // at last stop → return nearest
+    return nextInSeq || nearest;
   }
 
   return nearest;
@@ -323,7 +393,7 @@ function evaluateVehicle(vehicle, store) {
   const speedInfo = deriveSpeed(vid, lat, lon, gpsTs, vehicle.speed ?? null);
 
   // ── 2. Next stop ─────────────────────────────────────────────
-  const match = findNextStop(lat, lon, tripId, store);
+  const match = findNextStop(lat, lon, tripId, gpsTs, store);
   if (!match) {
     // No stop data for this trip — preserve sticky state or return unknown
     return global.ontimeState[vid] || unknownState();

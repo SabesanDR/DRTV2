@@ -104,37 +104,39 @@ router.get('/overview', (_req, res) => {
   const store       = db.store;
 
   // ── On-time calculation ──────────────────────────────────────
-  // PRIMARY: use performance_status from ontimeEngine (set on every vehicle
-  // each poll cycle via GPS-projection ETA). Always available, real-time.
+  // PRIMARY: use performance_status written by ontimeEngine on every vehicle
+  // each poll cycle via GPS-projection ETA. This is always populated and
+  // works regardless of whether tripUpdates has valid arrival_time fields.
   let late = 0, early = 0, onTime = 0;
 
   for (const v of vehicles) {
-    if (v.performance_status === 'late')    late++;
+    if      (v.performance_status === 'late')    late++;
     else if (v.performance_status === 'early')   early++;
     else if (v.performance_status === 'on_time') onTime++;
   }
 
-  // FALLBACK: if engine hasn't run yet (e.g. first boot before stop_times loaded),
-  // use tripUpdates static-GTFS join instead.
+  // FALLBACK: if engine hasn't classified anything yet (cold start / no
+  // stop_times loaded), fall back to tripUpdates static-GTFS join.
   if (late + early + onTime === 0) {
     for (const u of tripUpdates) {
       if (!u.trip_id || !u.stop_updates?.length) continue;
-      const stopTimes = store.stopTimesByTrip[u.trip_id];
+      const stopTimes = store.stopTimesByTrip?.[u.trip_id];
       if (!stopTimes) continue;
       const rtStop = u.stop_updates[0];
       const actualUnix = rtStop.arrival_time;
       if (actualUnix == null) continue;
-      let staticStop = stopTimes.find(s => s.stop_sequence === rtStop.stop_sequence)
-                    || stopTimes.find(s => s.stop_id === rtStop.stop_id);
+      const staticStop =
+        stopTimes.find(s => s.stop_sequence === rtStop.stop_sequence) ||
+        stopTimes.find(s => s.stop_id === rtStop.stop_id);
       if (!staticStop?.arrival_time) continue;
       const scheduledUnix = scheduledStopTimeToUnix(actualUnix, staticStop.arrival_time);
       if (!scheduledUnix) continue;
       const deltaSec = actualUnix - scheduledUnix;
       if (!Number.isFinite(deltaSec)) continue;
       const status = classifyArrivalBySeconds(deltaSec);
-      if (status === 'late')         late++;
-      else if (status === 'early')   early++;
-      else                           onTime++;
+      if      (status === 'late')  late++;
+      else if (status === 'early') early++;
+      else                         onTime++;
     }
   }
 
