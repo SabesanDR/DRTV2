@@ -291,6 +291,18 @@ function deriveSpeed(vehicleId, lat, lon, gpsTs, gtfsSpeedKmh) {
 // stop it is still AT that stop even if the time is slightly past.
 const PAST_TOLERANCE_SEC = 30;
 
+// If ALL stops on a trip are in the past AND the last stop was scheduled
+// more than this many seconds ago, the trip has fully completed.
+// The GTFS-RT feed often keeps broadcasting a vehicle on a trip_id that
+// finished hours ago. Returning null here causes the vehicle to show
+// 'unknown' instead of a fabricated 4–14 hour "late" delay.
+const TRIP_COMPLETED_SEC = 5 * 60; // 5 minutes grace after final stop
+
+// Hard sanity cap. No DRT bus is realistically delayed more than 90 minutes.
+// Any computed |delay| beyond this almost certainly means the vehicle is
+// broadcasting on a completed or wrong trip_id — treat as unknown.
+const MAX_BELIEVABLE_DELAY_SEC = 90 * 60; // 90 minutes
+
 function findNextStop(vLat, vLon, tripId, gpsTs, store) {
   const tripStops = getStopTimesForTrip(tripId, store);
   if (!tripStops || !tripStops.length) return null;
@@ -314,6 +326,20 @@ function findNextStop(vLat, vLon, tripId, gpsTs, store) {
   }
 
   if (!candidates.length) return null;
+
+  // ── Completed-trip guard ──────────────────────────────────────
+  // If every stop is "past" AND the last scheduled stop was more than
+  // TRIP_COMPLETED_SEC ago, this trip has finished. The vehicle is
+  // still transmitting a stale trip_id from the RT feed. Return null
+  // so the caller assigns 'unknown' instead of a false huge delay.
+  const allPast = candidates.every(c => c.isPast);
+  if (allPast) {
+    const lastStop = candidates.reduce((a, b) =>
+      b.stopEntry.stop_sequence > a.stopEntry.stop_sequence ? b : a);
+    if (lastStop.schUnix && gpsTs - lastStop.schUnix > TRIP_COMPLETED_SEC) {
+      return null;
+    }
+  }
 
   // Use upcoming stops; fall back to all if none qualify (end of trip)
   const upcoming = candidates.filter(c => !c.isPast);
@@ -431,6 +457,14 @@ function evaluateVehicle(vehicle, store) {
 
   // ── 5. Delay & classification ─────────────────────────────────
   const delaySec = Math.round(etaUnix - scheduledUnix);
+
+  // Sanity cap: if the computed delay is beyond any believable real-world
+  // value, the vehicle is almost certainly on a stale/wrong trip_id.
+  // Return unknown rather than showing "14 hours late" in the dashboard.
+  if (Math.abs(delaySec) > MAX_BELIEVABLE_DELAY_SEC) {
+    return global.ontimeState[vid] || unknownState();
+  }
+
   const status   = classify(delaySec);
 
   const state = {

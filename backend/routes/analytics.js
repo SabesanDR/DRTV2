@@ -71,11 +71,40 @@ function haversine(lat1, lon1, lat2, lon2) {
 function scheduledStopTimeToUnix(actualUnix, hhmmss) {
   if (!actualUnix || !hhmmss) return null;
 
-  const baseDate = new Date(actualUnix * 1000);
-  baseDate.setHours(0, 0, 0, 0);
+  const parts = (hhmmss + '').split(':').map(Number);
+  if (parts.length !== 3 || parts.some(isNaN)) return null;
+  const [h, m, s]        = parts;
+  const scheduledSecOfDay = h * 3600 + m * 60 + s;
+  const DAY_SEC           = 86400;
 
-  const [h, m, s] = hhmmss.split(':').map(Number);
-  return Math.floor(baseDate.getTime() / 1000) + (h * 3600 + m * 60 + s);
+  // Anchor to Eastern Time midnight (America/Toronto), not UTC midnight.
+  // setHours(0,0,0,0) uses the SERVER's local timezone — UTC on a
+  // production Linux server — which is 4-5 hours off from Eastern Time,
+  // producing the same systematic delay inflation seen elsewhere.
+  const d   = new Date(actualUnix * 1000);
+  const fmt = new Intl.DateTimeFormat('en-CA', {
+    timeZone: 'America/Toronto',
+    year: 'numeric', month: '2-digit', day: '2-digit',
+  });
+  const dp = Object.fromEntries(
+    fmt.formatToParts(d)
+       .filter(p => p.type !== 'literal')
+       .map(p => [p.type, parseInt(p.value, 10)])
+  );
+  const utcMs    = new Date(d.toLocaleString('en-US', { timeZone: 'UTC' }));
+  const torMs    = new Date(d.toLocaleString('en-US', { timeZone: 'America/Toronto' }));
+  const offsetSec = Math.round((torMs - utcMs) / 1000);
+  const torontoMidnightUtcSec =
+    Date.UTC(dp.year, dp.month - 1, dp.day, 0, 0, 0) / 1000 - offsetSec;
+
+  // Search ±1 service day to handle overnight trips (GTFS hours > 24)
+  let best = null, bestDiff = Infinity;
+  for (let offset = -1; offset <= 1; offset++) {
+    const candidate = torontoMidnightUtcSec + offset * DAY_SEC + scheduledSecOfDay;
+    const diff      = Math.abs(candidate - actualUnix);
+    if (diff < bestDiff) { bestDiff = diff; best = candidate; }
+  }
+  return bestDiff <= 12 * 3600 ? best : null;
 }
 
 /* ───────────────────────────────────────────────────────────────
