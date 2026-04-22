@@ -70,25 +70,21 @@ function haversine(lat1, lon1, lat2, lon2) {
 
 function scheduledStopTimeToUnix(actualUnix, hhmmss) {
   if (!actualUnix || !hhmmss) return null;
-
   const parts = (hhmmss + '').split(':').map(Number);
   if (parts.length !== 3 || parts.some(isNaN)) return null;
   const [h, m, s]        = parts;
   const scheduledSecOfDay = h * 3600 + m * 60 + s;
   const DAY_SEC           = 86400;
-
-  // Anchor to Eastern Time midnight (America/Toronto), not UTC midnight.
-  // setHours(0,0,0,0) uses the SERVER's local timezone — UTC on a
-  // production Linux server — which is 4-5 hours off from Eastern Time,
-  // producing the same systematic delay inflation seen elsewhere.
+  // Anchor to Eastern Time midnight, not UTC midnight.
+  // setHours(0,0,0,0) uses the server's local timezone (UTC on Linux prod),
+  // producing a 4–5 hour systematic error for all DRT schedule times.
   const d   = new Date(actualUnix * 1000);
   const fmt = new Intl.DateTimeFormat('en-CA', {
     timeZone: 'America/Toronto',
     year: 'numeric', month: '2-digit', day: '2-digit',
   });
   const dp = Object.fromEntries(
-    fmt.formatToParts(d)
-       .filter(p => p.type !== 'literal')
+    fmt.formatToParts(d).filter(p => p.type !== 'literal')
        .map(p => [p.type, parseInt(p.value, 10)])
   );
   const utcMs    = new Date(d.toLocaleString('en-US', { timeZone: 'UTC' }));
@@ -96,8 +92,6 @@ function scheduledStopTimeToUnix(actualUnix, hhmmss) {
   const offsetSec = Math.round((torMs - utcMs) / 1000);
   const torontoMidnightUtcSec =
     Date.UTC(dp.year, dp.month - 1, dp.day, 0, 0, 0) / 1000 - offsetSec;
-
-  // Search ±1 service day to handle overnight trips (GTFS hours > 24)
   let best = null, bestDiff = Infinity;
   for (let offset = -1; offset <= 1; offset++) {
     const candidate = torontoMidnightUtcSec + offset * DAY_SEC + scheduledSecOfDay;
@@ -278,85 +272,53 @@ res.json({
 
 /* ───────────────────────────────────────────────────────────────
    GET /api/analytics/on-time
-   Route‑level on‑time performance
-   (Computed from GTFS‑RT vs static stop_times)
+   Route-level on-time performance.
+   PRIMARY: vehicles[].performance_status (ontimeEngine, every 30s).
+   Does not depend on tripUpdates having arrival_time fields.
 ─────────────────────────────────────────────────────────────── */
 
 router.get('/on-time', (_req, res) => {
   if (!ensureData(res)) return;
-  const tripUpdates = global.cache.tripUpdates || [];
-  const store = db.store;
+  const vehicles = global.cache.vehicles || [];
+  const store    = db.store;
 
   const byRoute = {};
 
-  for (const u of tripUpdates) {
-    if (!u.trip_id || !u.route_id || !u.stop_updates?.length) continue;
+  for (const v of vehicles) {
+    const rid = v.route_id;
+    if (!rid || !v.performance_status || v.performance_status === 'unknown') continue;
 
-    const stopTimes = store.stopTimesByTrip[u.trip_id];
-    if (!stopTimes) continue;
-
-// Use the FIRST observed stop update
-const rtStop = u.stop_updates[0];
-
-const actualUnix = rtStop.arrival_time;
-if (actualUnix === null || actualUnix === undefined) continue;
-
-// Match by stop_sequence
-let staticStop = stopTimes.find(
-  s => s.stop_sequence === rtStop.stop_sequence
-);
-
-// Fallback by stop_id
-if (!staticStop || !staticStop.arrival_time) {
-  staticStop = stopTimes.find(
-    s => s.stop_id === rtStop.stop_id
-  );
-}
-if (!staticStop || !staticStop.arrival_time) continue;
-
-const scheduledUnix =
-  scheduledStopTimeToUnix(
-    actualUnix,
-    staticStop.arrival_time
-  );
-
-if (!scheduledUnix) continue;
-const deltaSec = actualUnix - scheduledUnix;
-if (!Number.isFinite(deltaSec)) continue;
-const status = classifyArrivalBySeconds(deltaSec);
-
-
-    if (!byRoute[u.route_id]) {
-      byRoute[u.route_id] = {
-        early: 0,
-        on_time: 0,
-        late: 0,
-        total: 0
-      };
+    if (!byRoute[rid]) {
+      byRoute[rid] = { early: 0, on_time: 0, late: 0, total: 0, delays: [] };
     }
-
-    byRoute[u.route_id][status]++;
-    byRoute[u.route_id].total++;
+    byRoute[rid][v.performance_status]++;
+    byRoute[rid].total++;
+    if (typeof v.delay_seconds === 'number') {
+      byRoute[rid].delays.push(v.delay_seconds);
+    }
   }
 
   const rows = Object.entries(byRoute).map(([routeId, stats]) => {
-    const route = store.routesById[routeId];
-
+    const route  = store.routesById?.[routeId];
+    const delays = stats.delays;
+    const avgSec = delays.length
+      ? Math.round(delays.reduce((a, b) => a + b, 0) / delays.length)
+      : 0;
     return {
-      route_id: routeId,
+      route_id:         routeId,
       route_short_name: route?.route_short_name || routeId,
-      route_color: route?.route_color || '2E7D32',
-
-      total_trips: stats.total,
-      early: stats.early,
-      on_time: stats.on_time,
-      late: stats.late,
-      on_time_percent: pct(stats.on_time, stats.total)
+      route_color:      route?.route_color      || '2E7D32',
+      total_trips:      stats.total,
+      early:            stats.early,
+      on_time:          stats.on_time,
+      late:             stats.late,
+      on_time_percent:  pct(stats.on_time, stats.total),
+      avg_delay_sec:    avgSec,
+      avg_delay_min:    Math.round((avgSec / 60) * 10) / 10,
     };
   });
 
   rows.sort((a, b) => b.total_trips - a.total_trips);
-
   res.json({ by_route: rows });
 });
 
@@ -705,85 +667,63 @@ return {
 
 /* ───────────────────────────────────────────────────────────────
    GET /api/analytics/delay-trend
-   Delay trend over rolling 15 minutes
-─────────────────────────────────────────────────────────────── */
+   Rolling 30-minute delay trend in 5-minute buckets.
 
-/* ───────────────────────────────────────────────────────────────
-   GET /api/analytics/delay-trend
-   Accurate delay trend (GTFS-RT vs static GTFS)
-   Rolling 15 minutes, 5-minute buckets
+   SOURCE: global.cache.delayHistory — populated by server.js every
+   poll cycle from vehicle delay_seconds values. This avoids the old
+   tripUpdates.timestamp approach, where DRT's feed sends timestamp=0
+   on most entries, leaving every bucket empty.
+
+   Each bucket shows the average delay_seconds across all vehicles
+   whose GPS timestamp fell inside that 5-minute window.
 ─────────────────────────────────────────────────────────────── */
 
 router.get('/delay-trend', (_req, res) => {
   if (!ensureData(res)) return;
-  const tripUpdates = global.cache.tripUpdates || [];
 
-// ── HARD SAFETY CAP (prevents calculating forever)
-const MAX_RT = 1500;
-const recentTripUpdates = tripUpdates.slice(-MAX_RT);
+  const now       = Date.now();
+  const windowMs  = 30 * 60 * 1000;  // 30-minute rolling window
+  const bucketMs  =  5 * 60 * 1000;  // 5-minute buckets
+  const history   = global.cache.delayHistory || [];
 
-  const store = db.store;
-
-  const now = Date.now();
-  const windowMs = 15 * 60 * 1000;  // last 15 minutes
-  const bucketMs = 5 * 60 * 1000;   // 5-minute buckets
-
+  // Build time-labelled buckets
   const buckets = [];
-
   for (let t = now - windowMs; t < now; t += bucketMs) {
-    const bucketStartSec = Math.floor(t / 1000);
-    const bucketEndSec = Math.floor((t + bucketMs) / 1000);
+    const bucketStart = t;
+    const bucketEnd   = t + bucketMs;
 
-    const deltas = [];
+    const inBucket = history.filter(h =>
+      h.ts >= bucketStart && h.ts < bucketEnd &&
+      typeof h.delay_sec === 'number' &&
+      Math.abs(h.delay_sec) <= 90 * 60   // exclude stale-trip outliers
+    );
 
-    for (const u of recentTripUpdates) {
-      if (!u.trip_id || !u.stop_updates?.length) continue;
-      if (!u.timestamp) continue;
+    const avgDelaySec = inBucket.length
+      ? Math.round(inBucket.reduce((a, b) => a + b.delay_sec, 0) / inBucket.length)
+      : null;
 
-      // Only include RT updates that occurred in this time bucket
-      if (u.timestamp < bucketStartSec || u.timestamp >= bucketEndSec) continue;
-
-      const stopTimes = store.stopTimesByTrip?.[u.trip_id];
-      if (!stopTimes) continue;
-
-      const rtStop = u.stop_updates[0];
-      if (!rtStop.arrival_time) continue;
-
-      const staticStop =
-        stopTimes.find(s => s.stop_sequence === rtStop.stop_sequence) ||
-        stopTimes.find(s => s.stop_id === rtStop.stop_id);
-
-      if (!staticStop?.arrival_time) continue;
-
-      const scheduledUnix =
-        scheduledStopTimeToUnix(rtStop.arrival_time, staticStop.arrival_time);
-      if (!scheduledUnix) continue;
-
-      const deltaSec = rtStop.arrival_time - scheduledUnix;
-
-      deltas.push(deltaSec);
-    }
-
-    const avgDelaySec = deltas.length
-      ? Math.round(deltas.reduce((a, b) => a + b, 0) / deltas.length)
-      : 0;
+    // Count breakdown
+    const lateCount   = inBucket.filter(h => h.delay_sec > 329).length;
+    const earlyCount  = inBucket.filter(h => h.delay_sec < -29).length;
+    const onTimeCount = inBucket.length - lateCount - earlyCount;
 
     buckets.push({
-      label: new Date(t).toLocaleTimeString('en-CA', {
-        hour: '2-digit',
-        minute: '2-digit'
-      }),
+      label:         new Date(t).toLocaleTimeString('en-CA', {
+                       timeZone: 'America/Toronto',
+                       hour: '2-digit', minute: '2-digit', hour12: false,
+                     }),
       avg_delay_sec: avgDelaySec,
-      avg_delay_min: Math.round((avgDelaySec / 60) * 10) / 10,
-      trip_count: deltas.length
+      avg_delay_min: avgDelaySec != null
+        ? Math.round((avgDelaySec / 60) * 10) / 10
+        : null,
+      trip_count:    inBucket.length,
+      late_count:    lateCount,
+      early_count:   earlyCount,
+      on_time_count: onTimeCount,
     });
   }
 
-  res.json({
-    window_minutes: 15,
-    bucket_minutes: 5,
-    buckets
-  });
+  res.json({ window_minutes: 30, bucket_minutes: 5, buckets });
 });
 
 

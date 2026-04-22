@@ -59,8 +59,25 @@ async function renderOnTimeChart() {
 // ── delay trend line chart ────────────────────────────────────────
 async function renderDelayTrendChart() {
   try {
-    const data = await apiFetch('/analytics/delay-trend');
+    const data    = await apiFetch('/analytics/delay-trend');
     const buckets = data.buckets || [];
+
+    // Filter to buckets that have actual data
+    const hasAny = buckets.some(b => b.trip_count > 0);
+
+    if (!hasAny) {
+      const canvas = document.getElementById('chartDelayTrend');
+      if (canvas) {
+        if (_charts['chartDelayTrend']) { _charts['chartDelayTrend'].destroy(); delete _charts['chartDelayTrend']; }
+        const ctx = canvas.getContext('2d');
+        ctx.clearRect(0, 0, canvas.width, canvas.height);
+        ctx.fillStyle = '#94a3b8';
+        ctx.font = '13px system-ui';
+        ctx.textAlign = 'center';
+        ctx.fillText('Collecting data — updates every 30 s…', canvas.width / 2, 100);
+      }
+      return;
+    }
 
     buildChart('chartDelayTrend', 'line', {
       labels: buckets.map(b => b.label),
@@ -72,12 +89,26 @@ async function renderDelayTrendChart() {
         borderWidth: 2,
         tension: 0.35,
         fill: true,
-        pointRadius: 3,
+        pointRadius: 4,
+        spanGaps: true,
       }],
     }, {
       plugins: {
         legend: { display: false },
-        tooltip: { callbacks: { label: ctx => `${ctx.raw} min delay` } },
+        tooltip: {
+          callbacks: {
+            label: ctx => {
+              const b = buckets[ctx.dataIndex];
+              if (!b || b.trip_count === 0) return 'No data';
+              const lines = [`Avg delay: ${b.avg_delay_min ?? '–'} min`];
+              if (b.trip_count) lines.push(`${b.trip_count} vehicles sampled`);
+              if (b.late_count)  lines.push(`🔴 Late: ${b.late_count}`);
+              if (b.early_count) lines.push(`🔵 Early: ${b.early_count}`);
+              if (b.on_time_count) lines.push(`🟢 On time: ${b.on_time_count}`);
+              return lines;
+            },
+          },
+        },
       },
       scales: {
         y: { ticks: { callback: v => v + ' min' } },
@@ -85,7 +116,6 @@ async function renderDelayTrendChart() {
       },
     });
   } catch (e) {
-    // No history yet — show placeholder
     const canvas = document.getElementById('chartDelayTrend');
     if (canvas) {
       const ctx = canvas.getContext('2d');
@@ -93,7 +123,7 @@ async function renderDelayTrendChart() {
       ctx.fillStyle = '#94a3b8';
       ctx.font = '13px system-ui';
       ctx.textAlign = 'center';
-      ctx.fillText('Collecting data (30 min rolling window)…', canvas.width/2, 100);
+      ctx.fillText('Collecting data (30 min rolling window)…', canvas.width / 2, 100);
     }
   }
 }

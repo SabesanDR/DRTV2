@@ -34,10 +34,33 @@ function classifyDelay(sec) {
 
 function scheduledToUnix(actualUnix, hhmmss) {
   if (!actualUnix || !hhmmss) return null;
-  const d = new Date(actualUnix * 1000);
-  d.setHours(0, 0, 0, 0);
-  const [h, m, s] = hhmmss.split(':').map(Number);
-  return Math.floor(d.getTime() / 1000) + h * 3600 + m * 60 + s;
+  const parts = (hhmmss + '').split(':').map(Number);
+  if (parts.length !== 3 || parts.some(isNaN)) return null;
+  const [h, m, s]        = parts;
+  const scheduledSecOfDay = h * 3600 + m * 60 + s;
+  const DAY_SEC           = 86400;
+  // Use Eastern Time midnight anchor — not server local (UTC on Linux prod).
+  const d   = new Date(actualUnix * 1000);
+  const fmt = new Intl.DateTimeFormat('en-CA', {
+    timeZone: 'America/Toronto',
+    year: 'numeric', month: '2-digit', day: '2-digit',
+  });
+  const dp = Object.fromEntries(
+    fmt.formatToParts(d).filter(p => p.type !== 'literal')
+       .map(p => [p.type, parseInt(p.value, 10)])
+  );
+  const utcMs    = new Date(d.toLocaleString('en-US', { timeZone: 'UTC' }));
+  const torMs    = new Date(d.toLocaleString('en-US', { timeZone: 'America/Toronto' }));
+  const offsetSec = Math.round((torMs - utcMs) / 1000);
+  const torontoMidnightUtcSec =
+    Date.UTC(dp.year, dp.month - 1, dp.day, 0, 0, 0) / 1000 - offsetSec;
+  let best = null, bestDiff = Infinity;
+  for (let offset = -1; offset <= 1; offset++) {
+    const candidate = torontoMidnightUtcSec + offset * DAY_SEC + scheduledSecOfDay;
+    const diff      = Math.abs(candidate - actualUnix);
+    if (diff < bestDiff) { bestDiff = diff; best = candidate; }
+  }
+  return bestDiff <= 12 * 3600 ? best : null;
 }
 
 // ── prune expired records ────────────────────────────────────────
@@ -75,7 +98,7 @@ function recordVehicles(vehicles) {
     lat:          v.latitude,
     lon:          v.longitude,
     bearing:      v.bearing      != null ? v.bearing : null,
-    speed_kmh:    v.speed        != null ? +(v.speed * 3.6).toFixed(1) : null,
+    speed_kmh:    v.speed        != null ? v.speed : null,
     occupancy:    v.occupancy_status != null ? v.occupancy_status : null,
     perf_status:  v.performance_status || 'unknown',
     delay_sec:    v.delay_seconds != null ? v.delay_seconds : null,

@@ -27,6 +27,8 @@ const shapesRoutes     = require('./routes/shapes');
 const stopsRoutes      = require('./routes/stops');
 const routesRoutes     = require('./routes/routesApi');
 const analyticsRoutes  = require('./routes/analytics');
+const exportRoutes     = require('./routes/export');
+const historyStore     = require('./historyStore');
 const ontimeEngine     = require('./ontimeEngine');
 
 const app  = express();
@@ -393,8 +395,27 @@ async function fetchVehiclePositions() {
     global.cache.vehicles    = vehicles;
     global.cache.lastUpdated.vehicles = new Date().toISOString();
 
-    // Record history for analytics (rolling 30 min)
+    // Record to historyStore for export page (rolling 24h)
+    historyStore.recordVehicles(vehicles);
+
+    // Record delay history for analytics delay-trend chart (rolling 30 min)
+    // Use vehicles rather than tripUpdates — vehicles always have delay_seconds
+    // from ontimeEngine, whereas tripUpdates.arrival_delay is usually null for DRT.
     const cutoff = now - 30 * 60_000;
+    global.cache.delayHistory = [
+      ...global.cache.delayHistory.filter(h => h.ts > cutoff),
+      ...vehicles
+        .filter(v => typeof v.delay_seconds === 'number' && v.performance_status !== 'unknown')
+        .map(v => ({
+          vehicle_id: v.vehicle_id,
+          route_id:   v.route_id,
+          delay_sec:  v.delay_seconds,
+          status:     v.performance_status,
+          ts:         now,
+        })),
+    ];
+
+    // Record history for map trails (rolling 30 min)
     global.cache.vehicleHistory = [
       ...global.cache.vehicleHistory.filter(h => h.ts > cutoff),
       ...vehicles.map(v => ({ vehicle_id: v.vehicle_id, route_id: v.route_id,
@@ -513,6 +534,9 @@ async function fetchTripUpdates() {
     global.cache.tripUpdates    = updates;
     global.cache.lastUpdated.tripUpdates = new Date().toISOString();
 
+    // Record to historyStore for export page (rolling 24h)
+    historyStore.recordTripUpdates(updates, db.store);
+
     // ── Feed health statistics ──
     const delayStats = {
       with_rt_delay: updates.filter(u =>
@@ -563,19 +587,6 @@ async function fetchTripUpdates() {
       `Late: ${late} | Early: ${early} | OnTime: ${onTime}`
     );
 
-    // Record delay history for analytics (rolling 30 min)
-    const now    = Date.now();
-    const cutoff = now - 30 * 60_000;
-    global.cache.delayHistory = [
-      ...global.cache.delayHistory.filter(h => h.ts > cutoff),
-      ...updates.filter(u => u.arrival_delay !== null).map(u => ({
-        trip_id: u.trip_id,
-        route_id: u.route_id,
-        delay_sec: u.arrival_delay,
-        status: u.status,
-        ts: now
-      })),
-    ];
   } catch (err) {
     console.warn('Trip updates error:', err.message);
   }
@@ -634,6 +645,7 @@ app.use('/api/shapes',       shapesRoutes);
 app.use('/api/stops',        stopsRoutes);
 app.use('/api/routes',       routesRoutes);
 app.use('/api/analytics',    analyticsRoutes);
+app.use('/api/export',       exportRoutes);
 
 // ── health ───────────────────────────────────────────────────────
 app.get('/api/health', (_req, res) => {
