@@ -18,6 +18,7 @@ const unzipper  = require('unzipper');
 // ── path constants ──────────────────────────────────────────────
 const JSON_DIR  = path.join(__dirname, '../data/gtfs_json');
 const ZIP_PATH  = path.join(__dirname, '../data/google_transit.zip');
+const GARAGES_PATH = path.join(__dirname, '../data/garages.json');
 
 // ── in-memory store ─────────────────────────────────────────────
 const store = {
@@ -33,6 +34,7 @@ const store = {
   stopTimes:       {},
   tripToRoute:     {},
   flags:           [],
+  garages:         [],
   flagIdCounter:   1,
 };
 
@@ -63,7 +65,17 @@ async function init() {
     await loadFromZip();
   }
   buildStopTimesByTrip();
-
+  // ── load garages (operational data, not GTFS) ───────────────
+  if (fs.existsSync(GARAGES_PATH)) {
+    try {
+      store.garages = JSON.parse(fs.readFileSync(GARAGES_PATH, 'utf-8'));
+      console.log(`Loaded ${store.garages.length} garages`);
+    } catch (e) {
+      console.warn(`WARNING: Could not load garages.json: ${e.message}`);
+    }
+  } else {
+    console.warn('garages.json not found — no garages loaded');
+  }
   buildDerivedLookups();
   console.log(`Store ready: ${store.routesList.length} routes, ` +
               `${Object.keys(store.stopsById).length} stops, ` +

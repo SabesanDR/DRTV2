@@ -30,6 +30,7 @@ const analyticsRoutes  = require('./routes/analytics');
 const exportRoutes     = require('./routes/export');
 const historyStore     = require('./historyStore');
 const ontimeEngine     = require('./ontimeEngine');
+const garagesApi    = require('./routes/garages');
 
 const app  = express();
 const PORT = process.env.PORT || 3000;
@@ -646,6 +647,7 @@ app.use('/api/stops',        stopsRoutes);
 app.use('/api/routes',       routesRoutes);
 app.use('/api/analytics',    analyticsRoutes);
 app.use('/api/export',       exportRoutes);
+app.use('/api/garages',      garagesApi);
 
 // ── health ───────────────────────────────────────────────────────
 app.get('/api/health', (_req, res) => {

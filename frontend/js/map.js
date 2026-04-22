@@ -19,6 +19,7 @@ const LG = {
   flags:    null,
   raw:      null,   // raw GPS positions (optional overlay)
   trails:   null,
+  garages:  null,   // garage locations
 };
 
 // Trail state per vehicle
@@ -63,12 +64,15 @@ function initMap() {
     refreshMapVehicles();
   });
 
-  ['togVehicles','togRoutes','togStops','togAlerts','togFlags','togSnapped'].forEach(id => {
+  ['togVehicles','togRoutes','togStops','togAlerts','togFlags','togSnapped','togGarages'].forEach(id => {
     document.getElementById(id)?.addEventListener('change', syncLayerVisibility);
   });
 
   // Right-click on map → flag nearest stop
   _map.on('contextmenu', handleContextMenu);
+
+  // Load garages
+  loadGarages();
 
   // Start vehicle refresh
   refreshMapVehicles();
@@ -83,6 +87,33 @@ const PERFORMANCE_THRESHOLDS = {
   EARLY: -29,
   LATE:   329,
 };
+
+// ── load garages ────────────────────────────────────────────────────
+async function loadGarages() {
+  try {
+    const data = await apiFetch('/garages');
+    LG.garages.clearLayers();
+    (data || []).forEach(garage => {
+      if (!garage.lat || !garage.lon) return;
+      const m = L.marker([garage.lat, garage.lon], {
+        icon: L.icon({
+          iconUrl: 'data:image/svg+xml;utf8,%3Csvg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="%23dc2626"%3E%3Cpath d="M10 20v-6h4v6h5v-8h3L12 3 2 12h3v8z"/%3E%3C/svg%3E',
+          iconSize: [32, 32],
+          iconAnchor: [16, 32],
+          popupAnchor: [0, -32],
+        }),
+      });
+      m.bindPopup(`<div style="min-width:180px">
+        <strong>🏛️ ${garage.name}</strong>
+        <br><small style="color:#64748b">Garage</small>
+        <br><small>${garage.address || 'No address'}</small>
+      </div>`);
+      m.addTo(LG.garages);
+    });
+  } catch (e) {
+    console.warn('Garage loading error:', e);
+  }
+}
 
 // ── populate route dropdown ───────────────────────────────────────
 async function populateRouteDropdown() {
@@ -513,6 +544,7 @@ function syncLayerVisibility() {
   if (tog('togAlerts'))   _map.addLayer(LG.alerts);    else _map.removeLayer(LG.alerts);
   if (tog('togFlags'))    _map.addLayer(LG.flags);     else _map.removeLayer(LG.flags);
   if (tog('togSnapped'))  _map.addLayer(LG.raw);       else _map.removeLayer(LG.raw);
+  if (tog('togGarages'))  _map.addLayer(LG.garages);   else _map.removeLayer(LG.garages);
 }
 
 /**

@@ -4,6 +4,7 @@
 let presentationMap = null;
 let vehiclesLayer   = null;
 let routesLayer     = null;
+let garagesLayer    = null;
 
 window.initPresentationMap = function () {
   if (presentationMap) return;
@@ -22,8 +23,10 @@ window.initPresentationMap = function () {
 
   routesLayer   = L.layerGroup().addTo(presentationMap);
   vehiclesLayer = L.layerGroup().addTo(presentationMap);
+  garagesLayer  = L.layerGroup().addTo(presentationMap);
 
   setTimeout(() => presentationMap.invalidateSize(), 150);
+  loadPresentationGarages();
 };
 
 // ── Smart formatters (mirror app.js — work even if app.js not loaded) ──
@@ -208,5 +211,35 @@ window.loadAllPresentationRoutes = async function () {
     } catch (e) {
       console.warn('Route shape failed:', r.route_id);
     }
+  }
+};
+
+// ── Load garages ──────────────────────────────────────────────────
+window.loadPresentationGarages = async function () {
+  if (!garagesLayer) return;
+  garagesLayer.clearLayers();
+
+  try {
+    const res = await fetch('/api/garages');
+    const garages = await res.json();
+    (garages || []).forEach(garage => {
+      if (!garage.lat || !garage.lon) return;
+      const marker = L.marker([garage.lat, garage.lon], {
+        icon: L.icon({
+          iconUrl: 'data:image/svg+xml;utf8,%3Csvg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="%23dc2626"%3E%3Cpath d="M10 20v-6h4v6h5v-8h3L12 3 2 12h3v8z"/%3E%3C/svg%3E',
+          iconSize: [32, 32],
+          iconAnchor: [16, 32],
+          popupAnchor: [0, -32],
+        }),
+      });
+      marker.bindPopup(`<div style="min-width:180px">
+        <strong>🏢 ${garage.name}</strong>
+        <br><small style="color:#64748b">Garage</small>
+        <br><small>${garage.address || 'No address'}</small>
+      </div>`);
+      marker.addTo(garagesLayer);
+    });
+  } catch (e) {
+    console.warn('Garage loading error:', e);
   }
 };
