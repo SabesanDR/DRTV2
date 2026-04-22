@@ -96,12 +96,33 @@ async function loadGarages() {
     (data || []).forEach(garage => {
       if (!garage.lat || !garage.lon) return;
       const m = L.marker([garage.lat, garage.lon], {
-        icon: L.icon({
-          iconUrl: 'data:image/svg+xml;utf8,%3Csvg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="%23dc2626"%3E%3Cpath d="M10 20v-6h4v6h5v-8h3L12 3 2 12h3v8z"/%3E%3C/svg%3E',
-          iconSize: [32, 32],
-          iconAnchor: [16, 32],
-          popupAnchor: [0, -32],
-        }),
+        icon: L.divIcon({
+  className: '',
+  html: `
+    <div style="
+      width:36px;
+      height:36px;
+      background:#2f3b4a;
+      border-radius:50%;
+      display:flex;
+      align-items:center;
+      justify-content:center;
+      border:2px solid #ffffff;
+      box-shadow:0 4px 10px rgba(0,0,0,.35);
+    ">
+      <svg xmlns="http://www.w3.org/2000/svg"
+           viewBox="0 0 24 24"
+           width="18"
+           height="18"
+           fill="#ffffff">
+        <path d="M10 20v-6h4v6h5v-8h3L12 3 2 12h3v8z"/>
+      </svg>
+    </div>
+  `,
+  iconSize: [36, 36],
+  iconAnchor: [18, 18],
+  popupAnchor: [0, -18],
+}),
       });
       m.bindPopup(`<div style="min-width:180px">
         <strong>🏛️ ${garage.name}</strong>
@@ -544,7 +565,6 @@ function syncLayerVisibility() {
   if (tog('togAlerts'))   _map.addLayer(LG.alerts);    else _map.removeLayer(LG.alerts);
   if (tog('togFlags'))    _map.addLayer(LG.flags);     else _map.removeLayer(LG.flags);
   if (tog('togSnapped'))  _map.addLayer(LG.raw);       else _map.removeLayer(LG.raw);
-  if (tog('togGarages'))  _map.addLayer(LG.garages);   else _map.removeLayer(LG.garages);
 }
 
 /**

@@ -2,15 +2,15 @@
   {
     "garage_id": "raleigh_oshawa",
     "name": "Raleigh Oshawa Garage",
-    "lat": 43.9076,
-    "lon": -78.8622,
+    "lat": 43.88352,
+    "lon": -78.82897,
     "address": "715 Farewell St, Oshawa ON L1H 6N2"
   },
   {
     "garage_id": "ajax_go",
     "name": "Ajax GO Garage",
-    "lat": 43.8414,
-    "lon": -79.0203,
+    "lat": 43.8454,
+    "lon": -79.04142,
     "address": "110 Westney Rd S, Ajax ON L1S 2C8"
   }
 ]

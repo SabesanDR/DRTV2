@@ -176,6 +176,8 @@ function getStopTimesForTrip(tripId, store) {
   //    where JSON keys have suffixes but RT ids are stripped)
   const byAliasOrig = store.stopTimesByTripNorm?.[tripId];
   if (byAliasOrig && byAliasOrig.length) return byAliasOrig;
+  // In getStopTimesForTrip() function:
+console.log(`Trip lookup - ${tripId}: ${result ? 'FOUND' : 'NOT FOUND'}`);
 
   return null;
 }
@@ -233,6 +235,8 @@ function deriveSpeed(vehicleId, lat, lon, gpsTs, gtfsSpeedKmh) {
       }
       // Speed implausibly high — GPS jitter or teleport, fall through
     }
+    // In ontimeEngine.js deriveSpeed() function, add logging:
+console.log(`Speed calc - ${vehicleId}: ${speedInfo.source} (${speedInfo.speedKmh} km/h)`);
   }
 
   // GTFS-RT reported speed (stored as km/h in server.js)
