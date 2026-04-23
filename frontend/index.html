@@ -43,6 +43,7 @@
   <button class="nav-btn" data-tab="export">Export</button>
   <button class="nav-btn" data-tab="admin">Admin</button>
   <button class="nav-btn" data-tab="presentation">Presentation</button>
+  <button class="nav-btn" data-tab="rawMap">Raw GPS Map</button>
 </nav>
 
 <!-- ══ MAIN ═════════════════════════════════════════════════════════ -->
@@ -388,6 +389,18 @@
   </div>
 
 </section>
+
+
+<!-- ── RAW GPS MAP TAB ─────────────────────────────────────────── -->
+<section id="tab-rawMap" class="tab">
+  <div class="map-layout">
+    <div class="map-wrap">
+      <div id="rawMap"></div>
+    </div>
+  </div>
+</section>
+
+
   
 
 </main>
@@ -447,6 +460,7 @@
 <script src="js/analytics.js"></script>
 <script src="js/admin.js"></script>
 <script src="js/export.js"></script>
+<script src="js/rawMap.js"></script>
 <script>
   // Initialise export panel the first time the Export tab is clicked
   document.querySelectorAll('.nav-btn[data-tab="export"]').forEach(function(btn) {
