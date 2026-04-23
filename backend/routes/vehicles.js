@@ -10,7 +10,16 @@ router.get('/', (req, res) => {
   let vehicles = global.cache.vehicles || [];
 
   if (route_id) {
-    vehicles = vehicles.filter(v => v.route_id === route_id);
+    // If route_id is a variant (e.g., "905C"), filter by route_variant
+    // Otherwise, filter by route_id (base route)
+    const isVariant = /^[0-9]+[A-Z]$/.test(route_id);
+    vehicles = vehicles.filter(v => {
+      if (isVariant) {
+        return v.route_variant === route_id;
+      } else {
+        return v.route_id === route_id;
+      }
+    });
   }
 
   const cleaned = vehicles.map(v => {

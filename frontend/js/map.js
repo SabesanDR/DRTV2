@@ -45,6 +45,10 @@ function initMap() {
     attribution: '© <a href="https://openstreetmap.org">OpenStreetMap</a>',
     maxZoom: 19,
   }).addTo(_map);
+  
+  // ── Map panes (visual hierarchy) ───────────────────────────────
+  _map.createPane('garagePane');
+  _map.getPane('garagePane').style.zIndex = 450;
 
   for (const key of Object.keys(LG)) {
     LG[key] = L.layerGroup().addTo(_map);
@@ -88,68 +92,93 @@ const PERFORMANCE_THRESHOLDS = {
   LATE:   329,
 };
 
-// ── load garages ────────────────────────────────────────────────────
+/* ── garages ───────────────────────────────────── */
 async function loadGarages() {
   try {
     const data = await apiFetch('/garages');
     LG.garages.clearLayers();
-    (data || []).forEach(garage => {
-      if (!garage.lat || !garage.lon) return;
-      const m = L.marker([garage.lat, garage.lon], {
+
+    (data || []).forEach(g => {
+      if (!g.lat || !g.lon) return;
+
+      const m = L.marker([g.lat, g.lon], {
+        pane: 'garagePane',
+        zIndexOffset: -100,
         icon: L.divIcon({
-  className: '',
-  html: `
-    <div style="
-      width:36px;
-      height:36px;
-      background:#2f3b4a;
-      border-radius:50%;
-      display:flex;
-      align-items:center;
-      justify-content:center;
-      border:2px solid #ffffff;
-      box-shadow:0 4px 10px rgba(0,0,0,.35);
-    ">
-      <svg xmlns="http://www.w3.org/2000/svg"
-           viewBox="0 0 24 24"
-           width="18"
-           height="18"
-           fill="#ffffff">
-        <path d="M10 20v-6h4v6h5v-8h3L12 3 2 12h3v8z"/>
-      </svg>
-    </div>
-  `,
-  iconSize: [36, 36],
-  iconAnchor: [18, 18],
-  popupAnchor: [0, -18],
-}),
+          className: 'garage-marker',
+          html: `
+            <div class="garage-icon">
+              <svg xmlns="http://www.w3.org/2000/svg"
+                   viewBox="0 0 24 24"
+                   width="18"
+                   height="18"
+                   fill="#ffffff">
+                <path d="M10 20v-6h4v6h5v-8h3L12 3 2 12h3v8z"/>
+              </svg>
+            </div>
+          `,
+          iconSize: [36, 36],
+          iconAnchor: [18, 20],
+          popupAnchor: [0, -22],
+        })
       });
-      m.bindPopup(`<div style="min-width:180px">
-        <strong>🏛️ ${garage.name}</strong>
-        <br><small style="color:#64748b">Garage</small>
-        <br><small>${garage.address || 'No address'}</small>
-      </div>`);
+
+      m.bindPopup(`
+        <div style="min-width:180px">
+          <strong>🏛️ ${g.name}</strong><br>
+          <small style="color:#64748b">Garage</small><br>
+          <small>${g.address || 'No address'}</small>
+        </div>
+      `);
+
       m.addTo(LG.garages);
     });
   } catch (e) {
-    console.warn('Garage loading error:', e);
+    console.warn('Garage load error:', e);
   }
 }
 
 // ── populate route dropdown ───────────────────────────────────────
 async function populateRouteDropdown() {
   try {
-    const data = await apiFetch('/routes');
-    const sel  = document.getElementById('routeSelect');
+    const routesData = await apiFetch('/routes');
+    const vehiclesData = await apiFetch('/vehicles');
+    const sel = document.getElementById('routeSelect');
     if (!sel) return;
     sel.innerHTML = '<option value="">— All Routes —</option>';
-    (data.data || []).forEach(r => {
-      const opt = document.createElement('option');
-      opt.value       = r.route_id;
-      opt.textContent = (r.route_short_name ? `${r.route_short_name} – ` : '') +
-                        (r.route_long_name || r.route_id);
-      sel.appendChild(opt);
+
+    const routeOptions = new Map(); // route_id -> display text
+
+    // Add base routes
+    (routesData.data || []).forEach(r => {
+      const display = (r.route_short_name ? `${r.route_short_name} – ` : '') +
+                      (r.route_long_name || r.route_id);
+      routeOptions.set(r.route_id, display);
     });
+
+    // Add variants from vehicles
+    (vehiclesData.data || []).forEach(v => {
+      const routeKey = v.route_variant || v.route_id;
+      if (routeKey && !routeOptions.has(routeKey)) {
+        routeOptions.set(routeKey, routeKey); // Simple display for variants
+      }
+    });
+
+    // Sort and add options
+    Array.from(routeOptions.entries())
+      .sort(([a], [b]) => {
+        // Sort numerically if possible, else alphabetically
+        const aNum = parseInt(a, 10);
+        const bNum = parseInt(b, 10);
+        if (!isNaN(aNum) && !isNaN(bNum)) return aNum - bNum;
+        return a.localeCompare(b);
+      })
+      .forEach(([value, text]) => {
+        const opt = document.createElement('option');
+        opt.value = value;
+        opt.textContent = text;
+        sel.appendChild(opt);
+      });
   } catch (e) {
     console.warn('Route dropdown error:', e);
   }
@@ -162,23 +191,33 @@ async function onRouteChange(routeId) {
   LG.stops.clearLayers();
   updateRouteInfoBox(null);
 
+  _currentRouteId = routeId; // Ensure it's set
+
   if (!routeId) {
     // show all vehicles
     refreshMapVehicles();
     return;
   }
 
+  const isVariant = /^[0-9]+[A-Z]$/.test(routeId);
+  const baseRoute = isVariant ? routeId.replace(/[A-Z]$/, '') : routeId;
+
   try {
     // 1. Route info
-    const routeData = await apiFetch(`/routes/${routeId}`);
+    const routeData = await apiFetch(`/routes/${baseRoute}`);
+    if (isVariant) {
+      // Modify for variant display
+      routeData.route_short_name = routeId;
+      routeData.route_long_name = `${routeData.route_long_name} (${routeId})`;
+    }
     updateRouteInfoBox(routeData);
 
     // 2. Draw shape
-    const shapeData = await apiFetch(`/routes/${routeId}/shape`);
+    const shapeData = await apiFetch(`/routes/${baseRoute}/shape`);
     drawRouteShape(shapeData, routeData);
 
     // 3. Load stops
-    const stopsData = await apiFetch(`/routes/${routeId}/stops`);
+    const stopsData = await apiFetch(`/routes/${baseRoute}/stops`);
     drawRouteStops(stopsData.data || []);
 
     // 4. Refresh vehicles (filtered)

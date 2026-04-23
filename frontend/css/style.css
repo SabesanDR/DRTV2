@@ -333,6 +333,29 @@ body { display: flex; flex-direction: column; }
   background: none; border: none; cursor: pointer; color: var(--c-muted); font-size: .9rem;
 }
 
+.garage-marker {
+  z-index: 450 !important;
+}
+
+.garage-icon {
+  width: 36px;
+  height: 36px;
+  background: #2f3b4a;
+  border-radius: 50%;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  border: 2px solid rgba(255,255,255,0.9);
+  box-shadow:
+    0 0 0 2px rgba(0,0,0,0.15),
+    0 6px 12px rgba(0,0,0,0.35);
+  transition: transform .12s ease, box-shadow .12s ease;
+}
+
+.garage-icon:hover {
+  transform: scale(1.1);
+}
+
 /* ── ANALYTICS GRID ──────────────────────────────────────── */
 .analytics-grid {
   display: grid;
