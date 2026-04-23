@@ -54,16 +54,56 @@ function loadJSON(name) {
 
 // ── main init ───────────────────────────────────────────────────
 async function init() {
-  const hasJSON = fs.existsSync(JSON_DIR) &&
-    fs.existsSync(jsonPath('routes.json'));
+  const jsonExists = fs.existsSync(JSON_DIR) && fs.existsSync(jsonPath('routes.json'));
+  const zipExists  = fs.existsSync(ZIP_PATH);
 
-  if (hasJSON) {
-    console.log('Loading pre-processed GTFS JSON files...');
-    loadFromJSON();
+  // Decide whether to use JSON or re-process the zip.
+  //
+  // WHY THIS MATTERS: db.js used to always load the JSON files when they
+  // existed, completely ignoring a newer google_transit.zip. This meant
+  // that replacing the zip with updated GTFS data (new routes, new shapes,
+  // new timetables) had zero effect — the app kept serving the old schedule.
+  //
+  // Fix: if the zip is newer than routes.json by more than 60 seconds,
+  // treat the JSON as stale and regenerate everything from the zip.
+  // This makes GTFS updates completely automatic: drop a new zip in data/,
+  // restart the server, and the new data loads immediately.
+
+  let useZip = false;
+
+  if (!jsonExists) {
+    useZip = true;
+    console.log('No JSON files found — will stream from GTFS zip...');
+  } else if (zipExists) {
+    const zipMtime  = fs.statSync(ZIP_PATH).mtimeMs;
+    const jsonMtime = fs.statSync(jsonPath('routes.json')).mtimeMs;
+    const zipIsNewer = zipMtime > jsonMtime + 60_000; // 60s grace period
+
+    if (zipIsNewer) {
+      useZip = true;
+      const ageSec = Math.round((zipMtime - jsonMtime) / 1000);
+      console.log(`⚠️  google_transit.zip is ${ageSec}s newer than JSON files.`);
+      console.log('   Re-loading from zip to pick up new routes/shapes/timetables...');
+    } else {
+      console.log('Loading pre-processed GTFS JSON files...');
+    }
   } else {
-    console.log('JSON files not found — streaming from GTFS zip (slow first run)...');
-    await loadFromZip();
+    console.log('Loading pre-processed GTFS JSON files...');
   }
+
+  if (useZip) {
+    await loadFromZip();
+    // After loading from zip, save JSON files so next restart is fast
+    // (only if we have write access to the JSON dir)
+    try {
+      await saveToJSON();
+    } catch (e) {
+      console.warn('  Could not save JSON cache:', e.message);
+    }
+  } else {
+    loadFromJSON();
+  }
+
   buildStopTimesByTrip();
   // ── load garages (operational data, not GTFS) ───────────────
   if (fs.existsSync(GARAGES_PATH)) {
@@ -118,7 +158,65 @@ async function loadFromZip() {
   await loadTripsFromZip();
   await loadRoutesFromZip();
   await loadStopsFromZip();
-  await loadStopTimesFromZip();  // FIX: was missing — stopTimesByTrip was always empty on first run
+  await loadStopTimesFromZip();
+  await loadTripToRouteFromZip();
+  buildRouteShapesFromZip();
+}
+
+// ── build route shapes and stopsByRoute from zip data ────────────
+function buildRouteShapesFromZip() {
+  // Build tripToRoute from tripsById (already loaded)
+  for (const [tid, t] of Object.entries(store.tripsById)) {
+    if (t.route_id) store.tripToRoute[tid] = t.route_id;
+  }
+  // buildDerivedLookups() will build store.routeShapes from shapePoints
+  // It is called later in init(), so nothing to do here.
+}
+
+// ── build trip_to_route from trips loaded in zip ─────────────────
+async function loadTripToRouteFromZip() {
+  // trip_to_route is derived from tripsById — build it now
+  store.tripToRoute = {};
+  for (const [tid, t] of Object.entries(store.tripsById)) {
+    if (t.route_id) store.tripToRoute[tid] = t.route_id;
+  }
+  console.log(`  Built trip_to_route: ${Object.keys(store.tripToRoute).length} entries`);
+}
+
+// ── save in-memory store back to JSON files ───────────────────────
+// Called after a zip load so the next restart is fast.
+async function saveToJSON() {
+  if (!fs.existsSync(JSON_DIR)) fs.mkdirSync(JSON_DIR, { recursive: true });
+
+  const files = {
+    'routes.json':         store.routesList,
+    'routes_by_id.json':   store.routesById,
+    'trips_by_id.json':    store.tripsById,
+    'trips_by_route.json': store.tripsByRoute,
+    'shape_by_trip.json':  store.shapeByTrip,
+    'shape_points.json':   store.shapePoints,
+    'route_shapes.json':   store.routeShapes,
+    'stops_by_id.json':    store.stopsById,
+    'stops_by_route.json': store.stopsByRoute,
+    'stop_times.json':     store.stopTimes,
+    'trip_to_route.json':  store.tripToRoute,
+  };
+
+  let saved = 0;
+  for (const [name, data] of Object.entries(files)) {
+    try {
+      fs.writeFileSync(
+        jsonPath(name),
+        JSON.stringify(data),
+        'utf-8'
+      );
+      saved++;
+    } catch (e) {
+      console.warn(`  Could not write ${name}: ${e.message}`);
+    }
+  }
+  console.log(`  Saved ${saved}/${Object.keys(files).length} JSON cache files`);
+  console.log('  Next restart will use JSON (fast load)');
 }
 
 // ── load stop_times from zip ──────────────────────────────────────
@@ -249,7 +347,16 @@ async function loadRoutesFromZip() {
         store.routesById[route_id] = r;
         store.routesList.push(r);
       });
-      rl.on('close', () => { console.log(`  Loaded ${store.routesList.length} routes`); resolve(); });
+      rl.on('close', () => {
+        // Also build routesList array (sorted by route_short_name)
+        store.routesList = Object.values(store.routesById)
+          .sort((a, b) => {
+            const an = a.route_short_name || a.route_id;
+            const bn = b.route_short_name || b.route_id;
+            return an.localeCompare(bn, undefined, { numeric: true });
+          });
+        console.log(`  Loaded ${store.routesList.length} routes`); resolve();
+      });
     });
     zip.on('finish', () => { if (!handled) resolve(); });
     zip.on('error', () => resolve());

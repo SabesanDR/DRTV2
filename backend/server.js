@@ -714,9 +714,51 @@ async function startServer() {
       ]);
     });
 
-    app.listen(PORT, () => {
-      console.log(`\n🚌 DRT Operations Hub running on http://localhost:${PORT}`);
-    });
+    // ── Start HTTP server with proper error handling ──────────────
+    // The plain app.listen() call had no error handler, so if port 3000
+    // was already in use (previous process still in TIME_WAIT, or a second
+    // terminal accidentally running the server), Node threw an uncaught
+    // EADDRINUSE error and crashed — with no useful message.
+    const server = app.listen(PORT)
+      .on('listening', () => {
+        console.log(`\n🚌 DRT Operations Hub → http://localhost:${PORT}`);
+        console.log(`   Press Ctrl+C to stop\n`);
+      })
+      .on('error', err => {
+        if (err.code === 'EADDRINUSE') {
+          console.error(`\n❌  Port ${PORT} is already in use.`);
+          console.error(`   Another instance of the server is probably running.`);
+          console.error(`   To fix this, run ONE of the following:\n`);
+          console.error(`   Option 1 — kill the process using the port:`);
+          console.error(`     npx kill-port ${PORT}\n`);
+          console.error(`   Option 2 — use a different port:`);
+          console.error(`     PORT=3001 node server.js\n`);
+          console.error(`   Option 3 — find and kill the process manually:`);
+          console.error(`     lsof -ti :${PORT} | xargs kill -9\n`);
+        } else {
+          console.error('Server error:', err.message);
+        }
+        process.exit(1);
+      });
+
+    // ── Graceful shutdown ─────────────────────────────────────────
+    // Properly close the server on SIGINT (Ctrl+C) and SIGTERM so the
+    // port is released immediately — eliminating the TIME_WAIT race
+    // that caused EADDRINUSE on quick restarts.
+    function shutdown(signal) {
+      console.log(`\n${signal} received — shutting down gracefully...`);
+      server.close(() => {
+        console.log('HTTP server closed. Port released. Goodbye 👋');
+        process.exit(0);
+      });
+      // Force-kill if graceful shutdown takes more than 5 seconds
+      setTimeout(() => {
+        console.warn('Forced shutdown after 5s timeout.');
+        process.exit(1);
+      }, 5000);
+    }
+    process.on('SIGINT',  () => shutdown('SIGINT'));
+    process.on('SIGTERM', () => shutdown('SIGTERM'));
   } catch (err) {
     console.error('Server startup failed:', err);
     process.exit(1);
