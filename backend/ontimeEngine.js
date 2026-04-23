@@ -176,8 +176,6 @@ function getStopTimesForTrip(tripId, store) {
   //    where JSON keys have suffixes but RT ids are stripped)
   const byAliasOrig = store.stopTimesByTripNorm?.[tripId];
   if (byAliasOrig && byAliasOrig.length) return byAliasOrig;
-  // In getStopTimesForTrip() function:
-console.log(`Trip lookup - ${tripId}: ${result ? 'FOUND' : 'NOT FOUND'}`);
 
   return null;
 }
@@ -235,8 +233,6 @@ function deriveSpeed(vehicleId, lat, lon, gpsTs, gtfsSpeedKmh) {
       }
       // Speed implausibly high — GPS jitter or teleport, fall through
     }
-    // In ontimeEngine.js deriveSpeed() function, add logging:
-console.log(`Speed calc - ${vehicleId}: ${speedInfo.source} (${speedInfo.speedKmh} km/h)`);
   }
 
   // GTFS-RT reported speed (stored as km/h in server.js)
@@ -508,34 +504,41 @@ function evaluateVehicle(vehicle, store) {
  */
 function evaluateAll(vehicles, store) {
   for (const v of vehicles) {
-    const s = evaluateVehicle(v, store);
+    try {
+      const s = evaluateVehicle(v, store);
 
-    // On-time classification
-    v.performance_status   = s.performance_status;
-    v.delay_seconds        = s.delay_seconds;
+      // On-time classification
+      v.performance_status   = s.performance_status;
+      v.delay_seconds        = s.delay_seconds;
 
-    // ETA
-    v.eta_unix             = s.eta_unix;
-    v.eta_seconds_away     = s.eta_seconds_away;
+      // ETA
+      v.eta_unix             = s.eta_unix;
+      v.eta_seconds_away     = s.eta_seconds_away;
 
-    // Next stop
-    v.next_stop_id         = s.next_stop_id;
-    v.next_stop_name       = s.next_stop_name;
-    v.next_stop_dist_m     = s.next_stop_dist_m;
-    v.next_stop_sequence   = s.next_stop_sequence;
+      // Next stop
+      v.next_stop_id         = s.next_stop_id;
+      v.next_stop_name       = s.next_stop_name;
+      v.next_stop_dist_m     = s.next_stop_dist_m;
+      v.next_stop_sequence   = s.next_stop_sequence;
 
-    // Speed
-    v.calculated_speed_kmh = s.speed_kmh;
-    v.speed_source         = s.speed_source;
-    v.gps_delta_dist_m     = s.gps_delta_dist_m;
-    v.gps_delta_dt_sec     = s.gps_delta_dt_sec;
+      // Speed
+      v.calculated_speed_kmh = s.speed_kmh;
+      v.speed_source         = s.speed_source;
+      v.gps_delta_dist_m     = s.gps_delta_dist_m;
+      v.gps_delta_dt_sec     = s.gps_delta_dt_sec;
 
-    // Legacy field aliases (map.js popup reads these)
-    v.matched_stop_id      = s.matched_stop_id;
-    v.matched_stop_name    = s.matched_stop_name;
-    v.matched_stop_dist_m  = s.matched_stop_dist_m;
-    v.at_stop_sequence     = s.stop_sequence;
-    v.between_stops        = s.between_stops ?? true;
+      // Legacy field aliases (map.js popup reads these)
+      v.matched_stop_id      = s.matched_stop_id;
+      v.matched_stop_name    = s.matched_stop_name;
+      v.matched_stop_dist_m  = s.matched_stop_dist_m;
+      v.at_stop_sequence     = s.stop_sequence;
+      v.between_stops        = s.between_stops ?? true;
+    } catch (err) {
+      // One bad vehicle must not crash the entire evaluation loop.
+      // Mark it unknown and continue with the rest of the fleet.
+      v.performance_status = 'unknown';
+      v.delay_seconds      = null;
+    }
   }
 }
 

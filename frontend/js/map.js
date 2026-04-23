@@ -360,7 +360,7 @@ function vehicleIcon(v) {
   const stale   = v.is_stale;
   const border  = stale ? '#94a3b8' : '#ffffff';
   const opacity = stale ? 0.55 : 1;
-  const label   = v.route_id || '?';
+  const label   = v.route_variant || v.route_id || '?';
 
   return L.divIcon({
     html: `<div class="v-icon ${stale ? 'v-icon--stale' : ''}"
@@ -448,9 +448,15 @@ function buildVehiclePopup(v) {
     ? `<br><span style="color:#dc2626">🚨 Position jump (${v.implied_speed_kmh} km/h)</span>`
     : '';
 
+  const routeLabel = v.route_variant || v.route_id || '–';
+  const headsignLine = v.branch
+    ? `<br>Headsign: <span style="color:#64748b">${v.branch}</span>`
+    : '';
+
   return `<div style="min-width:220px;font-size:.8rem;line-height:1.7">
     <strong style="font-size:.9rem">🚌 Vehicle ${v.vehicle_id}</strong>
-    <br>Route: <b>${v.route_id || '–'}</b>
+    <br>Route: <b>${routeLabel}${v.direction ? ' ' + v.direction : ''}</b>
+    ${headsignLine}
     ${v.trip_id ? `<br>Trip: <span style="color:#64748b">${v.trip_id}</span>` : ''}
     <hr style="margin:.3rem 0;border:none;border-top:1px solid #e2e8f0">
     <span style="color:${statusColour}">${statusIcon} ${statusLabel}</span>

@@ -41,6 +41,10 @@ const store = {
 // ── helpers ─────────────────────────────────────────────────────
 function jsonPath(name) { return path.join(JSON_DIR, name); }
 
+function normalizeTripId(tripId) {
+  return typeof tripId === 'string' ? tripId.split('__')[0] : tripId;
+}
+
 function loadJSON(name) {
   const p = jsonPath(name);
   if (!fs.existsSync(p)) return null;
@@ -120,6 +124,20 @@ async function init() {
   console.log(`Store ready: ${store.routesList.length} routes, ` +
               `${Object.keys(store.stopsById).length} stops, ` +
               `${Object.keys(store.tripsById).length} trips`);
+
+  // Build fast static lookups for realtime enrichment
+store.tripToShape     = {};
+store.tripToHeadsign  = {};
+store.shapeToHeadsign = {};
+
+for (const [tripId, trip] of Object.entries(store.tripsById)) {
+  if (trip.shape_id) {
+    store.tripToShape[tripId] = trip.shape_id;
+    store.shapeToHeadsign[trip.shape_id] = trip.trip_headsign || null;
+  }
+  store.tripToHeadsign[tripId] = trip.trip_headsign || null;
+}
+
 }
 
 // ── load from pre-processed JSON (fast) ─────────────────────────
@@ -127,7 +145,16 @@ function loadFromJSON() {
   const loaders = [
     ['routes.json',         d => { store.routesList   = d || []; }],
     ['routes_by_id.json',   d => { store.routesById   = d || {}; }],
-    ['trips_by_id.json',    d => { store.tripsById    = d || {}; }],
+    ['trips_by_id.json',    d => { 
+      store.tripsById = d || {}; 
+      // Add normalized short trip_ids for GTFS-RT lookup
+      for (const [fullId, trip] of Object.entries(store.tripsById)) {
+        const shortId = fullId.split('__')[0];
+        if (shortId !== fullId && !store.tripsById[shortId]) {
+          store.tripsById[shortId] = trip;
+        }
+      }
+    }],
     ['trips_by_route.json', d => { store.tripsByRoute = d || {}; }],
     ['shape_by_trip.json',  d => { store.shapeByTrip  = d || {}; }],
     ['shape_points.json',   d => { store.shapePoints  = d || {}; }],
@@ -316,7 +343,16 @@ async function loadTripsFromZip() {
         if (shape_id) store.shapeByTrip[trip_id] = shape_id;
         count++;
       });
-      rl.on('close', () => { console.log(`  Loaded ${count} trips`); resolve(); });
+      rl.on('close', () => {
+        for (const [fullId, trip] of Object.entries(store.tripsById)) {
+          const shortId = normalizeTripId(fullId);
+          if (shortId !== fullId && !store.tripsById[shortId]) {
+            store.tripsById[shortId] = trip;
+          }
+        }
+        console.log(`  Loaded ${count} trips`);
+        resolve();
+      });
     });
     zip.on('finish', () => { if (!handled) resolve(); });
     zip.on('error', () => resolve());

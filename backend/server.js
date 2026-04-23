@@ -69,6 +69,23 @@ function normalizeTripId(rtTripId) {
   return rtTripId.split('__')[0];
 }
 
+function deriveRouteVariant(routeId, branch) {
+  if (!routeId) return null;
+  if (!branch || typeof branch !== 'string') return routeId;
+
+  const trimmed = branch.trim();
+  // Common DRT pattern: "C - Uxbridge" becomes 905C
+  const letterMatch = trimmed.match(/^([A-Za-z0-9]+)\s*-\s*.*/);
+  if (letterMatch) {
+    const variant = letterMatch[1].toUpperCase();
+    if (/^[A-Z][0-9]?$/.test(variant)) {
+      return `${routeId}${variant}`;
+    }
+  }
+
+  return routeId;
+}
+
 // ── Classify delay using the same thresholds as ontimeEngine ──
 // (used only for console metrics, NOT for vehicle performance_status)
 const EARLY_THRESHOLD_SEC = ontimeEngine.EARLY_SEC;  // -29
@@ -139,7 +156,7 @@ function snapToShape(lat, lon, shapeCoords) {
 
 // ── derive scheduled arrival time (unix seconds) ────────────────
 function getScheduledArrivalUnix(tripId, stopSequence) {
-  const tripStops = db.store.stopTimesByTrip?.[tripId];
+  const tripStops = db.store.stopTimesByTrip?.[tripId] || db.store.stopTimesByTripNorm?.[tripId];
   if (!tripStops || tripStops.length === 0) return null;
 
   const stop = stopSequence
@@ -364,23 +381,45 @@ async function fetchVehiclePositions() {
           snapped = snap.snapped; snapDist = snap.snap_distance_m;
         }
       }
+      
+      const staticShapeId =
+        db.store.tripToShape?.[tripId] || null;
+
+      const branch =
+        db.store.tripToHeadsign?.[tripId] ||
+        db.store.shapeToHeadsign?.[staticShapeId] ||
+        null;
+
+      const route_variant = deriveRouteVariant(routeId, branch);
+
+      const direction_id = db.store.tripsById[tripId]?.direction_id;
+      const direction = direction_id === '1' ? 'Southbound' : direction_id === '0' ? 'Northbound' : null;
 
       let vehicle = {
         vehicle_id:       vehicleId,
+
         trip_id:          tripId,
         route_id:         routeId,
-        latitude:         snappedLat,
-        longitude:        snappedLon,
-        raw_latitude:     lat,
-        raw_longitude:    lon,
-        bearing:          vp.position.bearing   || 0,
-        speed:            vp.position.speed      ? Math.round(vp.position.speed * 3.6) : null,
-        timestamp:        ts,
-        snapped,
-        snap_distance_m:  snapDist,
-        occupancy_status: vp.occupancy_status || 0,
-        data_source:      'live',
-      };
+        route_variant,
+        direction,
+
+        // ✅ AUTHORITATIVE DATA (static GTFS)
+        branch,
+        shape_id:     staticShapeId,
+
+
+      latitude:         snappedLat,
+      longitude:        snappedLon,
+      raw_latitude:     lat,
+      raw_longitude:    lon,
+      bearing:          vp.position.bearing   || 0,
+      speed:            vp.position.speed      ? Math.round(vp.position.speed * 3.6) : null,
+      timestamp:        ts,
+      snapped,
+      snap_distance_m:  snapDist,
+      occupancy_status: vp.occupancy_status || 0,
+      data_source:      'live',
+    };
 
       vehicle = filterTeleport(vehicle);
       vehicles.push(enrichVehicle(vehicle));

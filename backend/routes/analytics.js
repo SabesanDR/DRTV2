@@ -728,6 +728,84 @@ router.get('/delay-trend', (_req, res) => {
 
 
 /* ───────────────────────────────────────────────────────────────
+   GET /api/analytics/gtfs-health
+   GTFS data health summary for dashboard
+─────────────────────────────────────────────────────────────── */
+
+router.get('/gtfs-health', (_req, res) => {
+  if (!ensureData(res)) return;
+  const vehicles    = global.cache.vehicles || [];
+  const tripUpdates = global.cache.tripUpdates || [];
+  const alerts      = global.cache.alerts || [];
+  const store       = db.store;
+
+  // Feed status
+  const now = Date.now() / 1000;
+  const vehiclesAge = global.cache.lastUpdated.vehicles ? now - new Date(global.cache.lastUpdated.vehicles).getTime() / 1000 : Infinity;
+  const tripUpdatesAge = global.cache.lastUpdated.tripUpdates ? now - new Date(global.cache.lastUpdated.tripUpdates).getTime() / 1000 : Infinity;
+  const alertsAge = global.cache.lastUpdated.alerts ? now - new Date(global.cache.lastUpdated.alerts).getTime() / 1000 : Infinity;
+
+  function feedStatus(age) {
+    if (age < 60) return 'live';
+    if (age < 300) return 'delayed';
+    if (age < 3600) return 'stale';
+    return 'unknown';
+  }
+
+  const feeds = {
+    vehicles: {
+      count: vehicles.length,
+      status: feedStatus(vehiclesAge)
+    },
+    tripUpdates: {
+      count: tripUpdates.length,
+      status: feedStatus(tripUpdatesAge)
+    },
+    alerts: {
+      count: alerts.length,
+      status: feedStatus(alertsAge)
+    }
+  };
+
+  // Coverage
+  const vehiclesTotal = vehicles.length;
+  const withTripId = vehicles.filter(v => v.trip_id).length;
+  const withGPS = vehicles.filter(v => v.position).length;
+
+  const cov = {
+    trip_coverage_pct: vehiclesTotal ? Math.round((withTripId / vehiclesTotal) * 100) : 0,
+    with_trip_id: withTripId,
+    vehicles_total: vehiclesTotal,
+    gps_coverage_pct: vehiclesTotal ? Math.round((withGPS / vehiclesTotal) * 100) : 0,
+    with_gps: withGPS
+  };
+
+  // Accuracy
+  const snappedVehicles = vehicles.filter(v => v.snapped).length;
+  const staleVehicles = vehicles.filter(v => v.is_stale).length;
+  const teleportFlagged = vehicles.filter(v => v.teleport_flag).length;
+
+  const acc = {
+    snapped_pct: vehiclesTotal ? Math.round((snappedVehicles / vehiclesTotal) * 100) : 0,
+    snapped_vehicles: snappedVehicles,
+    stale_pct: vehiclesTotal ? Math.round((staleVehicles / vehiclesTotal) * 100) : 0,
+    stale_vehicles: staleVehicles,
+    teleport_flagged: teleportFlagged
+  };
+
+  // Static
+  const stat = {
+    routes: Object.keys(store.routesById || {}).length,
+    stops: Object.keys(store.stopsById || {}).length,
+    trips: Object.keys(store.tripsById || {}).length,
+    shapes: Object.keys(store.shapesById || {}).length
+  };
+
+  res.json({ feeds, coverage: cov, accuracy: acc, static: stat });
+});
+
+
+/* ───────────────────────────────────────────────────────────────
    EXPORT ROUTER (ONLY ONCE)
 ─────────────────────────────────────────────────────────────── */
 
