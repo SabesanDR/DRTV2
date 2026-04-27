@@ -38,10 +38,10 @@ function switchTab(name) {
   if (name === 'analytics') { refreshAnalytics(); }
   if (name === 'reports')   { refreshReports(); }
   if (name === 'presentation') { startPresentation(); }
-  
+  if (name === 'rewind')    { window.initRewind(); }
+
   if (name === 'rawMap') {
     window.initRawMap();
-    // Ensure map is properly sized after tab switch
     setTimeout(() => {
       if (window.rawMap && typeof window.rawMap.invalidateSize === 'function') {
         window.rawMap.invalidateSize();

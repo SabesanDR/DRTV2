@@ -39,6 +39,7 @@
   <button class="nav-btn active" data-tab="dashboard">Dashboard</button>
   <button class="nav-btn" data-tab="map">Live Map</button>
   <button class="nav-btn" data-tab="analytics">Analytics</button>
+  <button class="nav-btn" data-tab="rewind">⏪ Rewind</button>
   <button class="nav-btn" data-tab="reports">Reports</button>
   <button class="nav-btn" data-tab="export">Export</button>
   <button class="nav-btn" data-tab="admin">Admin</button>
@@ -167,7 +168,6 @@
         <div class="sidebar-section">
           <div class="sidebar-label">Layers</div>
           <label class="toggle-row"><input type="checkbox" id="togVehicles" checked><span>Vehicles</span></label>
-          <label class="toggle-row"><input type="checkbox" id="togEarly" checked><span>🔵 Highlight early buses</span></label>
           <label class="toggle-row"><input type="checkbox" id="togRoutes" checked><span>Route Shape</span></label>
           <label class="toggle-row"><input type="checkbox" id="togStops" checked><span>Stops</span></label>
           <label class="toggle-row"><input type="checkbox" id="togAlerts" checked><span>Alerts</span></label>
@@ -183,10 +183,6 @@
           <div class="legend-item"><span class="leg-dot" style="background:#d97706"></span>On time — approaching late</div>
           <div class="legend-item"><span class="leg-dot" style="background:#dc2626"></span>Late (&gt;5 min 29s behind schedule)</div>
           <div class="legend-item"><span class="leg-dot" style="background:#64748b"></span>Status unknown / calculating</div>
-          <div class="legend-item">
-            <span style="display:inline-block;width:14px;height:14px;border-radius:50%;
-              border:2px dashed #2563eb;margin-right:6px;vertical-align:middle;flex-shrink:0"></span>Early highlight ring
-          </div>
           <div class="legend-item"><span class="leg-dot leg-dot--ring" style="border-color:#94a3b8;opacity:.55"></span>Stale GPS</div>
           <div class="legend-item"><span style="display:inline-block;width:18px;height:4px;background:#3b82f6;border-radius:2px;margin-right:6px;vertical-align:middle"></span>Route shape</div>
         </div>
@@ -273,6 +269,138 @@
 
 
 
+
+
+  <!-- ══ REWIND TAB ════════════════════════════════════════════════ -->
+  <section id="tab-rewind" class="tab">
+    <div style="display:flex;height:calc(100vh - 56px - 42px - 32px);overflow:hidden;flex-direction:column">
+
+      <!-- ── Top toolbar ─────────────────────────────────────────── -->
+      <div style="display:flex;align-items:center;gap:.75rem;padding:.55rem 1rem;
+                  background:var(--c-surface);border-bottom:1px solid var(--c-border);flex-shrink:0;flex-wrap:wrap">
+
+        <!-- Route selector -->
+        <div style="display:flex;align-items:center;gap:.4rem">
+          <label style="font-size:.76rem;font-weight:600;color:var(--c-muted);white-space:nowrap">Route:</label>
+          <select id="rwRouteSelect" disabled
+            style="padding:.28rem .55rem;border:1px solid var(--c-border);border-radius:var(--radius);
+                   font-size:.78rem;background:var(--c-surface);color:var(--c-text);min-width:200px">
+            <option value="">Loading routes…</option>
+          </select>
+        </div>
+
+        <!-- Satellite toggle -->
+        <button id="rwSatBtn" title="Switch to satellite"
+          style="padding:.28rem .65rem;border:1px solid var(--c-border);border-radius:var(--radius);
+                 background:var(--c-surface);cursor:pointer;font-size:.76rem;color:var(--c-text)">
+          🛰️ Satellite
+        </button>
+
+        <!-- Spacer -->
+        <div style="flex:1"></div>
+
+        <!-- Window message -->
+        <div id="rwWindowMsg" style="font-size:.74rem;color:var(--c-muted);max-width:340px;text-align:right">
+          Initialising…
+        </div>
+      </div>
+
+      <!-- ── Map + sidebar ────────────────────────────────────────── -->
+      <div style="flex:1;display:flex;overflow:hidden;min-height:0">
+
+        <!-- Map -->
+        <div style="flex:1;position:relative">
+          <div id="rewindMap" style="width:100%;height:100%"></div>
+
+          <!-- No-data overlay -->
+          <div id="rwNoData" style="display:none;position:absolute;inset:0;z-index:500;
+            background:rgba(255,255,255,.82);backdrop-filter:blur(4px);
+            display:none;flex-direction:column;align-items:center;justify-content:center;gap:.5rem">
+            <div style="font-size:2rem">📭</div>
+            <div style="font-weight:700;color:var(--c-text)">No history for this route yet</div>
+            <div style="font-size:.8rem;color:var(--c-muted)">History builds up as the server polls every 30 seconds</div>
+          </div>
+
+          <!-- Status bar over map -->
+          <div id="rwStatusBar"
+            style="position:absolute;top:10px;left:50%;transform:translateX(-50%);z-index:400;
+                   background:rgba(255,255,255,.92);backdrop-filter:blur(4px);border-radius:20px;
+                   padding:.28rem .9rem;font-size:.78rem;box-shadow:var(--shadow-md);
+                   white-space:nowrap;pointer-events:none">
+            Select a route and use the timeline below
+          </div>
+        </div>
+
+      </div>
+
+      <!-- ── Timeline controls ────────────────────────────────────── -->
+      <div style="flex-shrink:0;background:var(--c-surface);border-top:1px solid var(--c-border);
+                  padding:.55rem 1rem .6rem;display:flex;flex-direction:column;gap:.4rem">
+
+        <!-- Density bar -->
+        <canvas id="rwDensityBar"
+          style="width:100%;height:18px;border-radius:4px;background:#f1f5f9;display:block">
+        </canvas>
+
+        <!-- Slider row -->
+        <div style="display:flex;align-items:center;gap:.7rem">
+
+          <!-- Play / Pause -->
+          <button id="rwPlayBtn" disabled title="Play"
+            style="width:34px;height:34px;border-radius:50%;border:none;
+                   background:var(--c-drt);color:#fff;font-size:1rem;cursor:pointer;
+                   display:flex;align-items:center;justify-content:center;flex-shrink:0;
+                   box-shadow:var(--shadow)">▶</button>
+
+          <!-- Start label -->
+          <span id="rwStartLabel"
+            style="font-size:.69rem;color:var(--c-muted);white-space:nowrap;min-width:50px">–</span>
+
+          <!-- Slider -->
+          <div style="flex:1;position:relative">
+            <input id="rwSlider" type="range" min="0" max="0" value="0" disabled
+              style="width:100%;accent-color:var(--c-drt);cursor:pointer">
+          </div>
+
+          <!-- End label -->
+          <span id="rwEndLabel"
+            style="font-size:.69rem;color:var(--c-muted);white-space:nowrap;min-width:50px;text-align:right">–</span>
+
+          <!-- Speed -->
+          <div style="display:flex;align-items:center;gap:.3rem;flex-shrink:0">
+            <label style="font-size:.7rem;color:var(--c-muted)">Speed</label>
+            <select id="rwSpeedSelect" disabled
+              style="padding:.2rem .35rem;border:1px solid var(--c-border);border-radius:var(--radius);
+                     font-size:.74rem;background:var(--c-surface);color:var(--c-text)">
+              <option value="0.5">0.5×</option>
+              <option value="1" selected>1×</option>
+              <option value="2">2×</option>
+              <option value="4">4×</option>
+              <option value="8">8×</option>
+            </select>
+          </div>
+
+          <!-- Jump to live -->
+          <button id="rwJumpLive" disabled title="Jump to most recent"
+            style="padding:.28rem .65rem;border:1px solid var(--c-border);border-radius:var(--radius);
+                   background:var(--c-surface);cursor:pointer;font-size:.76rem;color:var(--c-text);
+                   white-space:nowrap;flex-shrink:0">
+            ⏭ Live
+          </button>
+        </div>
+
+        <!-- Timestamp display -->
+        <div style="display:flex;justify-content:center">
+          <div id="rwTimestamp"
+            style="font-family:monospace;font-size:.82rem;font-weight:700;color:var(--c-text);
+                   background:#f1f5f9;padding:.15rem .7rem;border-radius:12px;letter-spacing:.03em">
+            –
+          </div>
+        </div>
+
+      </div>
+    </div>
+  </section>
 
   <!-- ── REPORTS TAB ───────────────────────────────────────────── -->
   <section id="tab-reports" class="tab">
@@ -466,6 +594,7 @@
 <script src="js/admin.js"></script>
 <script src="js/export.js"></script>
 <script src="js/rawMap.js"></script>
+<script src="js/rewind.js"></script>
 <script>
   // Initialise export panel the first time the Export tab is clicked
   document.querySelectorAll('.nav-btn[data-tab="export"]').forEach(function(btn) {
@@ -478,4 +607,3 @@
 </script>
 </body>
 </html>
-

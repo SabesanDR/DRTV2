@@ -28,6 +28,7 @@ const stopsRoutes      = require('./routes/stops');
 const routesRoutes     = require('./routes/routesApi');
 const analyticsRoutes  = require('./routes/analytics');
 const exportRoutes     = require('./routes/export');
+const rewindRoutes     = require('./routes/rewind');
 const historyStore     = require('./historyStore');
 const ontimeEngine     = require('./ontimeEngine');
 const garagesApi    = require('./routes/garages');
@@ -686,6 +687,7 @@ app.use('/api/stops',        stopsRoutes);
 app.use('/api/routes',       routesRoutes);
 app.use('/api/analytics',    analyticsRoutes);
 app.use('/api/export',       exportRoutes);
+app.use('/api/rewind',       rewindRoutes);
 app.use('/api/garages',      garagesApi);
 
 // ── health ───────────────────────────────────────────────────────
