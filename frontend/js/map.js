@@ -486,11 +486,18 @@ function buildVehiclePopup(v) {
 
   // ── Next stop & ETA ───────────────────────────────────────────
   let nextStopLine = '';
-  if (v.next_stop_name || v.matched_stop_name) {
+  if (Array.isArray(v.next_stops) && v.next_stops.length) {
+    const stopsHtml = v.next_stops.slice(0, 3).map((stop, idx) => {
+      const distStr = stop.dist_m != null ? ` (${_fmtDist(stop.dist_m)} away)` : '';
+      const etaStr = stop.eta_seconds_away != null ? ` - ETA <b>${_fmtEta(stop.eta_seconds_away)}</b>` : '';
+      return `${idx + 1}. <b>${stop.stop_name}</b>${distStr}${etaStr}`;
+    }).join('<br>');
+    nextStopLine = `<br><small style="color:#475569">🚏 Upcoming:<br>${stopsHtml}</small>`;
+  } else if (v.next_stop_name || v.matched_stop_name) {
     const stopName = v.next_stop_name || v.matched_stop_name;
     const distM    = v.next_stop_dist_m ?? v.matched_stop_dist_m;
     const etaSec   = v.eta_seconds_away;
-    const etaStr   = etaSec != null ? ` — ETA <b>${_fmtEta(etaSec)}</b>` : '';
+    const etaStr   = etaSec != null ? ` - ETA <b>${_fmtEta(etaSec)}</b>` : '';
     const distStr  = distM  != null ? ` (${_fmtDist(distM)} away)` : '';
     nextStopLine = `<br><small style="color:#475569">🚏 Next: <b>${stopName}</b>${distStr}${etaStr}</small>`;
   }

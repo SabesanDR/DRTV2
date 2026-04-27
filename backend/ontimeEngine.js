@@ -303,7 +303,191 @@ const TRIP_COMPLETED_SEC = 5 * 60; // 5 minutes grace after final stop
 // broadcasting on a completed or wrong trip_id — treat as unknown.
 const MAX_BELIEVABLE_DELAY_SEC = 90 * 60; // 90 minutes
 
+function normalizeTripId(tripId) {
+  return typeof tripId === 'string' ? tripId.split('__')[0] : tripId;
+}
+
+function getTripRecord(tripId, store) {
+  if (!tripId) return null;
+  return store.tripsById?.[tripId] || store.tripsById?.[normalizeTripId(tripId)] || null;
+}
+
+function getShapePointsForTrip(tripId, store) {
+  const trip = getTripRecord(tripId, store);
+  const shapeId =
+    trip?.shape_id ||
+    store.shapeByTrip?.[tripId] ||
+    store.shapeByTrip?.[normalizeTripId(tripId)] ||
+    store.tripToShape?.[tripId] ||
+    store.tripToShape?.[normalizeTripId(tripId)] ||
+    null;
+
+  if (!shapeId) return null;
+  const pts = store.shapePoints?.[shapeId];
+  return Array.isArray(pts) && pts.length > 1 ? pts : null;
+}
+
+function latLonToXY(lat, lon, originLat) {
+  const rad = Math.PI / 180;
+  const scale = 6_371_000;
+  const x = lon * rad * scale * Math.cos(originLat * rad);
+  const y = lat * rad * scale;
+  return { x, y };
+}
+
+function projectPointOntoShape(lat, lon, shapePoints) {
+  if (!Array.isArray(shapePoints) || shapePoints.length < 2) return null;
+
+  const originLat = lat;
+  const target = latLonToXY(lat, lon, originLat);
+
+  let best = null;
+  let cumulativeM = 0;
+
+  for (let i = 0; i < shapePoints.length - 1; i++) {
+    const a = shapePoints[i];
+    const b = shapePoints[i + 1];
+    if (!a || !b) continue;
+
+    const aXY = latLonToXY(a.lat, a.lon, originLat);
+    const bXY = latLonToXY(b.lat, b.lon, originLat);
+    const dx = bXY.x - aXY.x;
+    const dy = bXY.y - aXY.y;
+    const segLen2 = dx * dx + dy * dy;
+    const segLen = Math.sqrt(segLen2);
+    if (segLen === 0) continue;
+
+    const tRaw = ((target.x - aXY.x) * dx + (target.y - aXY.y) * dy) / segLen2;
+    const t = Math.max(0, Math.min(1, tRaw));
+    const projX = aXY.x + t * dx;
+    const projY = aXY.y + t * dy;
+    const distM = Math.hypot(target.x - projX, target.y - projY);
+    const progressM = cumulativeM + segLen * t;
+
+    if (!best || distM < best.distM) {
+      best = { distM, progressM, segmentIndex: i, segmentFraction: t };
+    }
+
+    cumulativeM += segLen;
+  }
+
+  return best;
+}
+
+function getTripStopProjectionCache(store) {
+  if (!store._tripStopProjectionCache) store._tripStopProjectionCache = {};
+  return store._tripStopProjectionCache;
+}
+
+function buildTripStopProjection(tripId, store) {
+  const cache = getTripStopProjectionCache(store);
+  if (cache[tripId]) return cache[tripId];
+
+  const tripStops = getStopTimesForTrip(tripId, store);
+  const shapePoints = getShapePointsForTrip(tripId, store);
+
+  if (!tripStops?.length || !shapePoints?.length) {
+    cache[tripId] = null;
+    return null;
+  }
+
+  const projectedStops = tripStops
+    .map(stopEntry => {
+      const staticStop = store.stopsById?.[stopEntry.stop_id];
+      if (!staticStop || isNaN(staticStop.stop_lat) || isNaN(staticStop.stop_lon)) return null;
+      const projection = projectPointOntoShape(staticStop.stop_lat, staticStop.stop_lon, shapePoints);
+      if (!projection) return null;
+      return {
+        stopEntry,
+        staticStop,
+        progressM: projection.progressM,
+        shapeOffsetM: projection.distM,
+      };
+    })
+    .filter(Boolean)
+    .sort((a, b) => {
+      if (a.stopEntry.stop_sequence !== b.stopEntry.stop_sequence) {
+        return a.stopEntry.stop_sequence - b.stopEntry.stop_sequence;
+      }
+      return a.progressM - b.progressM;
+    });
+
+  cache[tripId] = projectedStops.length ? { shapePoints, projectedStops } : null;
+  return cache[tripId];
+}
+
+function buildUpcomingStopList(vLat, vLon, tripId, gpsTs, store, count = 3) {
+  const tripProjection = buildTripStopProjection(tripId, store);
+  if (!tripProjection) return null;
+
+  const vehicleProjection = projectPointOntoShape(vLat, vLon, tripProjection.shapePoints);
+  if (!vehicleProjection) return null;
+
+  const vehicleProgressM = vehicleProjection.progressM;
+  const shapedCandidates = tripProjection.projectedStops.map(item => {
+    const distM = haversine(vLat, vLon, item.staticStop.stop_lat, item.staticStop.stop_lon);
+    const schUnix = scheduledToUnix(gpsTs, item.stopEntry.arrival_time);
+    const progressAheadM = item.progressM - vehicleProgressM;
+    const isScheduledPast = schUnix != null && schUnix < gpsTs - PAST_TOLERANCE_SEC;
+    const isPastByShape = progressAheadM < -AT_STOP_M;
+    const isPast = isPastByShape || (isScheduledPast && distM > AT_STOP_M);
+
+    return {
+      ...item,
+      distM,
+      schUnix,
+      progressAheadM,
+      isPast,
+    };
+  });
+
+  if (!shapedCandidates.length) return null;
+
+  const allPast = shapedCandidates.every(c => c.isPast);
+  if (allPast) {
+    const lastStop = shapedCandidates.reduce((a, b) =>
+      b.stopEntry.stop_sequence > a.stopEntry.stop_sequence ? b : a
+    );
+    if (lastStop.schUnix && gpsTs - lastStop.schUnix > TRIP_COMPLETED_SEC) {
+      return [];
+    }
+  }
+
+  let upcoming = shapedCandidates.filter(c => !c.isPast);
+
+  if (!upcoming.length) {
+    upcoming = [...shapedCandidates].sort((a, b) => {
+      if (a.progressAheadM !== b.progressAheadM) return b.progressAheadM - a.progressAheadM;
+      return a.stopEntry.stop_sequence - b.stopEntry.stop_sequence;
+    }).slice(-count);
+  } else {
+    upcoming.sort((a, b) => {
+      if (a.progressAheadM !== b.progressAheadM) return a.progressAheadM - b.progressAheadM;
+      return a.stopEntry.stop_sequence - b.stopEntry.stop_sequence;
+    });
+  }
+
+  if (upcoming[0] && upcoming[0].distM <= AT_STOP_M && upcoming.length > 1) {
+    upcoming = upcoming.slice(1);
+  }
+
+  return upcoming.slice(0, count);
+}
+
 function findNextStop(vLat, vLon, tripId, gpsTs, store) {
+  const shapedUpcoming = buildUpcomingStopList(vLat, vLon, tripId, gpsTs, store, 3);
+  if (Array.isArray(shapedUpcoming)) {
+    if (!shapedUpcoming.length) return null;
+    const [first] = shapedUpcoming;
+    return {
+      stopEntry: first.stopEntry,
+      staticStop: first.staticStop,
+      distM: first.distM,
+      schUnix: first.schUnix,
+      upcomingStops: shapedUpcoming,
+    };
+  }
+
   const tripStops = getStopTimesForTrip(tripId, store);
   if (!tripStops || !tripStops.length) return null;
 
@@ -382,6 +566,7 @@ function unknownState() {
     next_stop_name:       null,
     next_stop_dist_m:     null,
     next_stop_sequence:   null,
+    next_stops:           [],
     speed_mps:            null,
     speed_kmh:            null,
     speed_source:         null,
@@ -467,6 +652,33 @@ function evaluateVehicle(vehicle, store) {
 
   const status   = classify(delaySec);
 
+  const upcomingStops = Array.isArray(match.upcomingStops)
+    ? match.upcomingStops
+    : [{
+        stopEntry,
+        staticStop,
+        distM,
+        schUnix: scheduledUnix,
+      }];
+
+  const nextStops = upcomingStops.slice(0, 3).map(item => {
+    const effectiveDistM = item.distM != null
+      ? item.distM
+      : haversine(lat, lon, item.staticStop.stop_lat, item.staticStop.stop_lon);
+    const etaSecondsAway = Math.round(effectiveDistM / effectiveMps);
+    const itemEtaUnix = gpsTs + etaSecondsAway;
+    const itemScheduledUnix = item.schUnix ?? scheduledToUnix(gpsTs, item.stopEntry.arrival_time);
+    return {
+      stop_id: item.stopEntry.stop_id,
+      stop_name: item.staticStop.stop_name,
+      stop_sequence: item.stopEntry.stop_sequence,
+      dist_m: Math.round(effectiveDistM),
+      eta_seconds_away: etaSecondsAway,
+      eta_unix: Math.round(itemEtaUnix),
+      scheduled_unix: itemScheduledUnix ?? null,
+    };
+  });
+
   const state = {
     performance_status:  status,
     delay_seconds:       delaySec,
@@ -476,6 +688,7 @@ function evaluateVehicle(vehicle, store) {
     next_stop_name:      staticStop.stop_name,
     next_stop_dist_m:    Math.round(distM),
     next_stop_sequence:  stopEntry.stop_sequence,
+    next_stops:          nextStops,
     scheduled_unix:      scheduledUnix,
     speed_mps:           Math.round(speedInfo.speedMps * 100) / 100,
     speed_kmh:           speedInfo.speedKmh,
@@ -520,6 +733,7 @@ function evaluateAll(vehicles, store) {
       v.next_stop_name       = s.next_stop_name;
       v.next_stop_dist_m     = s.next_stop_dist_m;
       v.next_stop_sequence   = s.next_stop_sequence;
+      v.next_stops           = s.next_stops || [];
 
       // Speed
       v.calculated_speed_kmh = s.speed_kmh;

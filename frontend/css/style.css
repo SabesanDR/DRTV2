@@ -842,7 +842,7 @@ canvas {
   opacity: 0;
 }
 
-* ── Raw GPS Map container ─────────────────────────────── */
+/* Raw GPS Map container */
 
 #rawMap {
   width: 100%;
@@ -945,5 +945,3 @@ canvas {
   border-radius: 4px;
   color: #1e293b;
 }
-
-

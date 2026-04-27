@@ -149,13 +149,24 @@ window.updatePresentationMap = function (vehicles, focusBounds, staticBounds) {
 
     // Next stop + ETA
     let nextStopLine = '';
-    const stopName = v.next_stop_name || v.matched_stop_name;
-    if (stopName) {
+    if (Array.isArray(v.next_stops) && v.next_stops.length) {
+      const stopsHtml = v.next_stops.slice(0, 3).map((stop, idx) => {
+        const distStr = stop.dist_m != null ? ` · ${fmtDist(stop.dist_m)}` : '';
+        const etaStr  = stop.eta_seconds_away != null ? ` - ETA <b>${fmtDur(stop.eta_seconds_away)}</b>` : '';
+        return `${idx + 1}. <b>${stop.stop_name}</b>${distStr}${etaStr}`;
+      }).join('<br>');
+      nextStopLine = `<br><small style="color:#475569">🚏 Upcoming:<br>${stopsHtml}</small>`;
+    } else {
+      const stopName = v.next_stop_name || v.matched_stop_name;
+      if (!stopName) {
+        nextStopLine = '';
+      } else {
       const distM  = v.next_stop_dist_m ?? v.matched_stop_dist_m;
       const etaSec = v.eta_seconds_away;
       const distStr = distM  != null ? ` · ${fmtDist(distM)}` : '';
-      const etaStr  = etaSec != null ? ` — ETA <b>${fmtDur(etaSec)}</b>` : '';
+      const etaStr  = etaSec != null ? ` - ETA <b>${fmtDur(etaSec)}</b>` : '';
       nextStopLine  = `<br><small style="color:#475569">🚏 ${stopName}${distStr}${etaStr}</small>`;
+      }
     }
 
     // Speed with source badge
