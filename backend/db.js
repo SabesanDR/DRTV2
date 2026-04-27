@@ -501,6 +501,7 @@ function buildStopTimesByTrip() {
   for (const tripId in store.stopTimesByTrip)     sortBySeq(store.stopTimesByTrip[tripId]);
   for (const tripId in store.stopTimesByTripNorm) sortBySeq(store.stopTimesByTripNorm[tripId]);
 
+
   const rawCount  = Object.keys(store.stopTimesByTrip).length;
   const normCount = Object.keys(store.stopTimesByTripNorm).length;
   console.log(
@@ -511,39 +512,107 @@ function buildStopTimesByTrip() {
 
 // ── build derived route-shape structures if loaded from zip ──────
 function buildDerivedLookups() {
-  if (Object.keys(store.routeShapes).length > 0) return;
+  // Rebuild if empty OR if no variant keys exist yet (stale JSON from old build)
+  const hasVariants = Object.keys(store.routeShapes).some(k => /[A-Z]$/.test(k));
+  if (Object.keys(store.routeShapes).length > 0 && hasVariants) return;
 
-  for (const [routeId, tripIds] of Object.entries(store.tripsByRoute)) {
-    const counts = {};
-    for (const tid of tripIds) {
-      const sid = store.shapeByTrip[tid];
-      if (sid && store.shapePoints[sid]) counts[sid] = (counts[sid] || 0) + 1;
-    }
-    const top = Object.keys(counts).sort((a, b) => counts[b] - counts[a]).slice(0, 2);
-    const shapes = [];
-    for (const sid of top) {
-      const pts = store.shapePoints[sid] || [];
-      if (!pts.length) continue;
-      const step = Math.max(1, Math.floor(pts.length / 600));
-      const sampled = pts.filter((_, i) => i % step === 0);
-      const lats = sampled.map(p => p.lat), lons = sampled.map(p => p.lon);
-      shapes.push({
-        shape_id: sid,
-        coordinates: sampled.map(p => [p.lon, p.lat]),
-        bbox: { minLat: Math.min(...lats), maxLat: Math.max(...lats),
-                minLon: Math.min(...lons), maxLon: Math.max(...lons) },
-      });
-    }
-    if (!shapes.length) continue;
-    store.routeShapes[routeId] = {
-      route_id: routeId, shapes,
+  // ── Build routeShapes indexed by routeId AND by variant key ──────
+  //
+  // PROBLEM BEFORE: only stored the top-2 most-common shapes per route,
+  // completely ignoring route branches/variants. Selecting "905C" (Uxbridge)
+  // showed the same shape as "905" (Whitby Station) because 905C's shape_id
+  // was never stored.
+  //
+  // FIX: for each route, group trips by their variant letter extracted
+  // from trip_headsign (e.g. "C - Uxbridge" → variant "C").
+  // Store a separate entry in routeShapes for every variant:
+  //   store.routeShapes['905']  = most-common shape (base route)
+  //   store.routeShapes['905A'] = A - Windfields Farm shape
+  //   store.routeShapes['905C'] = C - Uxbridge shape (extends 60km further)
+  //
+  // This lets /api/routes/905C/shape return the correct long-distance shape.
+
+  // Helper: build shape entry from a shape_id + point data
+  function makeShapeEntry(sid) {
+    const pts = store.shapePoints[sid];
+    if (!pts || !pts.length) return null;
+    const step    = Math.max(1, Math.floor(pts.length / 600));
+    const sampled = pts.filter((_, i) => i % step === 0);
+    const lats    = sampled.map(p => p.lat);
+    const lons    = sampled.map(p => p.lon);
+    return {
+      shape_id:    sid,
+      coordinates: sampled.map(p => [p.lon, p.lat]),
       bbox: {
-        minLat: Math.min(...shapes.map(s => s.bbox.minLat)),
-        maxLat: Math.max(...shapes.map(s => s.bbox.maxLat)),
-        minLon: Math.min(...shapes.map(s => s.bbox.minLon)),
-        maxLon: Math.max(...shapes.map(s => s.bbox.maxLon)),
+        minLat: Math.min(...lats), maxLat: Math.max(...lats),
+        minLon: Math.min(...lons), maxLon: Math.max(...lons),
       },
     };
+  }
+
+  // Helper: combine bboxes of multiple shape entries
+  function combineBbox(shapes) {
+    return {
+      minLat: Math.min(...shapes.map(s => s.bbox.minLat)),
+      maxLat: Math.max(...shapes.map(s => s.bbox.maxLat)),
+      minLon: Math.min(...shapes.map(s => s.bbox.minLon)),
+      maxLon: Math.max(...shapes.map(s => s.bbox.maxLon)),
+    };
+  }
+
+  // Helper: extract variant letter from headsign
+  // "C - Uxbridge" → "C", "A - Windfields Farm" → "A", "Whitby Station" → ""
+  function extractVariant(headsign) {
+    if (!headsign) return '';
+    const m = headsign.match(/^([A-Z])\s*[-–]/);
+    return m ? m[1] : '';
+  }
+
+  for (const [routeId, tripIds] of Object.entries(store.tripsByRoute)) {
+
+    // Group shape_ids by variant ('' = base route, 'A','B','C' = branches)
+    const variantShapes = {}; // variantKey → { sid → count }
+
+    for (const tid of tripIds) {
+      const sid      = store.shapeByTrip[tid];
+      const trip     = store.tripsById[tid];
+      const headsign = trip?.trip_headsign || '';
+      const variant  = extractVariant(headsign);
+      const key      = variant ? routeId + variant : routeId;
+
+      if (!sid || !store.shapePoints[sid]) continue;
+      if (!variantShapes[key]) variantShapes[key] = {};
+      variantShapes[key][sid] = (variantShapes[key][sid] || 0) + 1;
+    }
+
+    // For each variant key, pick the most-common shape and build entry
+    for (const [variantKey, sidCounts] of Object.entries(variantShapes)) {
+      const topSid = Object.keys(sidCounts)
+        .sort((a, b) => sidCounts[b] - sidCounts[a])[0];
+      const entry = makeShapeEntry(topSid);
+      if (!entry) continue;
+
+      store.routeShapes[variantKey] = {
+        route_id: routeId,
+        variant:  variantKey,
+        shapes:   [entry],
+        bbox:     entry.bbox,
+      };
+    }
+
+    // For the BASE route key, also include a second shape (inbound/outbound)
+    // so the base route selector still shows both directions
+    if (store.routeShapes[routeId]) {
+      const baseSidCounts = variantShapes[routeId] || {};
+      const top2 = Object.keys(baseSidCounts)
+        .sort((a, b) => baseSidCounts[b] - baseSidCounts[a])
+        .slice(0, 2);
+      const entries = top2.map(makeShapeEntry).filter(Boolean);
+      if (entries.length > 1) {
+        store.routeShapes[routeId].shapes = entries;
+        store.routeShapes[routeId].bbox   = combineBbox(entries);
+      }
+    }
   }
 
   for (const [tid, t] of Object.entries(store.tripsById)) {

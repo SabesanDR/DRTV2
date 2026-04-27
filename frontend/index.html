@@ -167,6 +167,7 @@
         <div class="sidebar-section">
           <div class="sidebar-label">Layers</div>
           <label class="toggle-row"><input type="checkbox" id="togVehicles" checked><span>Vehicles</span></label>
+          <label class="toggle-row"><input type="checkbox" id="togEarly" checked><span>🔵 Highlight early buses</span></label>
           <label class="toggle-row"><input type="checkbox" id="togRoutes" checked><span>Route Shape</span></label>
           <label class="toggle-row"><input type="checkbox" id="togStops" checked><span>Stops</span></label>
           <label class="toggle-row"><input type="checkbox" id="togAlerts" checked><span>Alerts</span></label>
@@ -182,6 +183,10 @@
           <div class="legend-item"><span class="leg-dot" style="background:#d97706"></span>On time — approaching late</div>
           <div class="legend-item"><span class="leg-dot" style="background:#dc2626"></span>Late (&gt;5 min 29s behind schedule)</div>
           <div class="legend-item"><span class="leg-dot" style="background:#64748b"></span>Status unknown / calculating</div>
+          <div class="legend-item">
+            <span style="display:inline-block;width:14px;height:14px;border-radius:50%;
+              border:2px dashed #2563eb;margin-right:6px;vertical-align:middle;flex-shrink:0"></span>Early highlight ring
+          </div>
           <div class="legend-item"><span class="leg-dot leg-dot--ring" style="border-color:#94a3b8;opacity:.55"></span>Stale GPS</div>
           <div class="legend-item"><span style="display:inline-block;width:18px;height:4px;background:#3b82f6;border-radius:2px;margin-right:6px;vertical-align:middle"></span>Route shape</div>
         </div>

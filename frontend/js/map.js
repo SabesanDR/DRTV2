@@ -13,13 +13,14 @@ let _showLateOnly = false;
 // Layer groups
 const LG = {
   vehicles: null,
+  early:    null,   // early-vehicle highlight overlay
   route:    null,
   stops:    null,
   alerts:   null,
   flags:    null,
-  raw:      null,   // raw GPS positions (optional overlay)
+  raw:      null,
   trails:   null,
-  garages:  null,   // garage locations
+  garages:  null,
 };
 
 // Trail state per vehicle
@@ -53,7 +54,6 @@ function initMap() {
   for (const key of Object.keys(LG)) {
     LG[key] = L.layerGroup().addTo(_map);
   }
-
   // Populate route dropdown
   populateRouteDropdown();
 
@@ -68,7 +68,7 @@ function initMap() {
     refreshMapVehicles();
   });
 
-  ['togVehicles','togRoutes','togStops','togAlerts','togFlags','togSnapped','togGarages'].forEach(id => {
+  ['togVehicles','togEarly','togRoutes','togStops','togAlerts','togFlags','togSnapped','togGarages'].forEach(id => {
     document.getElementById(id)?.addEventListener('change', syncLayerVisibility);
   });
 
@@ -313,6 +313,7 @@ async function refreshMapVehicles() {
     window.global_vehicles_cache = vehicles;
 
     LG.vehicles.clearLayers();
+    LG.early.clearLayers();
     window.liveVehicleMarkers = {};
     LG.raw.clearLayers();
 
@@ -334,6 +335,25 @@ async function refreshMapVehicles() {
 
       m.bindPopup(buildVehiclePopup(v));
       m.addTo(LG.vehicles);
+
+      // Early vehicle highlight ring — added to a separate togglable layer
+      // so operators can turn it on/off independently of the main vehicle layer
+      if (v.performance_status === 'early') {
+        const ring = L.circleMarker([v.latitude, v.longitude], {
+          radius:      18,
+          fillColor:   'transparent',
+          color:       '#2563eb',
+          weight:      2.5,
+          opacity:     0.75,
+          fillOpacity: 0,
+          dashArray:   '5 4',
+        });
+        ring.bindTooltip(
+          `🔵 Early — ${v.route_id || ''} · Veh ${v.vehicle_id}`,
+          { sticky: true }
+        );
+        ring.addTo(LG.early);
+      }
 
       // Raw GPS dot (shown when "show raw GPS" checked)
       if (v.raw_latitude && v.raw_longitude &&
@@ -377,23 +397,14 @@ async function refreshMapVehicles() {
 
 // ── vehicle icon ──────────────────────────────────────────────────
 function vehicleIcon(v) {
-  // Use performance_status (set by ontimeEngine) as primary signal.
-  // Fall back to delay_seconds arithmetic only if status is unknown.
   const status = v.performance_status || 'unknown';
   const delay  = typeof v.delay_seconds === 'number' ? v.delay_seconds : null;
 
-  let bg = '#16a34a'; // on_time (DRT green)
-
-  if (status === 'early') {
-    bg = '#2563eb';                          // blue — running early
-  } else if (status === 'late') {
-    bg = '#dc2626';                          // red — running late
-  } else if (status === 'unknown') {
-    bg = '#64748b';                          // grey — no data yet
-  } else if (status === 'on_time' && delay !== null && delay > 180) {
-    bg = '#d97706';                          // amber — on-time but approaching late
-  }
-  // else: on_time → DRT green
+  let bg = '#16a34a'; // on_time — DRT green
+  if      (status === 'early')   bg = '#2563eb';
+  else if (status === 'late')    bg = '#dc2626';
+  else if (status === 'unknown') bg = '#64748b';
+  else if (status === 'on_time' && delay !== null && delay > 180) bg = '#d97706';
 
   const size    = 28;
   const stale   = v.is_stale;
@@ -401,15 +412,41 @@ function vehicleIcon(v) {
   const opacity = stale ? 0.55 : 1;
   const label   = v.route_variant || v.route_id || '?';
 
+  // ── Direction arrow ───────────────────────────────────────────
+  // Use bearing from the GTFS-RT position field (0=N, 90=E, 180=S, 270=W).
+  // The arrow is a small triangle rendered outside the circle in the
+  // direction of travel so it visually follows the route line.
+  let arrowHtml = '';
+  const bearing = typeof v.bearing === 'number' && v.bearing > 0 ? v.bearing : null;
+  if (bearing !== null) {
+    // Offset the arrow tip 2px outside the circle border
+    const arrowLen  = 8;   // px from centre to arrow tip
+    const offset    = size / 2 + 3; // distance from icon centre to arrow base
+    const rad       = (bearing - 90) * Math.PI / 180; // rotate so 0=up
+    const tipX      = 50 + Math.cos(rad) * (offset + arrowLen);
+    const tipY      = 50 + Math.sin(rad) * (offset + arrowLen);
+    const baseL     = { x: 50 + Math.cos(rad - 0.5) * offset, y: 50 + Math.sin(rad - 0.5) * offset };
+    const baseR     = { x: 50 + Math.cos(rad + 0.5) * offset, y: 50 + Math.sin(rad + 0.5) * offset };
+    arrowHtml = `
+      <svg viewBox="0 0 100 100" style="position:absolute;inset:-${size/2}px;width:${size*2}px;height:${size*2}px;pointer-events:none;overflow:visible">
+        <polygon points="${tipX},${tipY} ${baseL.x},${baseL.y} ${baseR.x},${baseR.y}"
+          fill="${bg}" stroke="${border}" stroke-width="1.5" opacity="${opacity}"/>
+      </svg>`;
+  }
+
   return L.divIcon({
-    html: `<div class="v-icon ${stale ? 'v-icon--stale' : ''}"
-      style="background:${bg};border-color:${border};width:${size}px;height:${size}px;opacity:${opacity};
-             color:#fff;display:flex;align-items:center;justify-content:center;
-             font-size:.6rem;font-weight:800;border-radius:50%;border:2px solid ${border};
-             box-shadow:0 1px 4px rgba(0,0,0,.3)"
-    >${label}</div>`,
+    html: `<div style="position:relative;width:${size}px;height:${size}px">
+      ${arrowHtml}
+      <div class="v-icon ${stale ? 'v-icon--stale' : ''}"
+        style="background:${bg};border-color:${border};width:${size}px;height:${size}px;
+               opacity:${opacity};color:#fff;display:flex;align-items:center;justify-content:center;
+               font-size:.6rem;font-weight:800;border-radius:50%;border:2px solid ${border};
+               box-shadow:0 1px 4px rgba(0,0,0,.3);position:relative;z-index:1">
+        ${label}
+      </div>
+    </div>`,
     iconSize:   [size, size],
-    iconAnchor: [size/2, size/2],
+    iconAnchor: [size / 2, size / 2],
     className:  '',
   });
 }
@@ -605,6 +642,7 @@ function handleContextMenu(e) {
 function syncLayerVisibility() {
   const tog = id => document.getElementById(id)?.checked;
   if (tog('togVehicles')) _map.addLayer(LG.vehicles);  else _map.removeLayer(LG.vehicles);
+  if (tog('togEarly'))    _map.addLayer(LG.early);     else _map.removeLayer(LG.early);
   if (tog('togRoutes'))   _map.addLayer(LG.route);     else _map.removeLayer(LG.route);
   if (tog('togStops'))    _map.addLayer(LG.stops);     else _map.removeLayer(LG.stops);
   if (tog('togAlerts'))   _map.addLayer(LG.alerts);    else _map.removeLayer(LG.alerts);

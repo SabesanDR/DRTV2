@@ -17,9 +17,24 @@ router.get('/:route_id', (req, res) => {
 });
 
 // GET /api/routes/:route_id/shape — GeoJSON-ready shape + bbox
+// Supports variant keys like "905C", "901A" directly — db.js now indexes
+// each branch separately so selecting 905C returns the Uxbridge shape,
+// not the Whitby Station shape that happens to have more trips.
 router.get('/:route_id/shape', (req, res) => {
-  const rs = db.store.routeShapes[req.params.route_id];
-  if (!rs) return res.status(404).json({ error: 'No shape for this route' });
+  const rid     = req.params.route_id;
+  const store   = db.store;
+
+  // 1. Try exact key (covers "905C", "901A", plain "905")
+  let rs = store.routeShapes[rid];
+
+  // 2. If not found and the key ends with a letter, try the numeric base
+  //    (handles edge case where only the base route has a shape)
+  if (!rs && /^[0-9]+[A-Z]$/.test(rid)) {
+    const base = rid.replace(/[A-Z]$/, '');
+    rs = store.routeShapes[base];
+  }
+
+  if (!rs) return res.status(404).json({ error: `No shape for route ${rid}` });
   res.json(rs);
 });
 
