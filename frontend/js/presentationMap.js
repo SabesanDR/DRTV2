@@ -5,6 +5,9 @@ let presentationMap = null;
 let vehiclesLayer   = null;
 let routesLayer     = null;
 let garagesLayer    = null;
+let presentationStreetLayer = null;
+let presentationSatLayer    = null;
+let presentationUseSat      = false;
 
 window.initPresentationMap = function () {
   if (presentationMap) return;
@@ -17,17 +20,42 @@ window.initPresentationMap = function () {
     preferCanvas: true,
   });
 
-  L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', {
+  presentationStreetLayer = L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', {
     attribution: '© OpenStreetMap',
+    maxZoom: 19,
   }).addTo(presentationMap);
+
+  presentationSatLayer = L.tileLayer(
+    'https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/{z}/{y}/{x}',
+    { attribution: 'Tiles © Esri', maxZoom: 19 }
+  );
 
   routesLayer   = L.layerGroup().addTo(presentationMap);
   vehiclesLayer = L.layerGroup().addTo(presentationMap);
   garagesLayer  = L.layerGroup().addTo(presentationMap);
 
+  document.getElementById('presentationSatBtn')
+    ?.addEventListener('click', togglePresentationSatellite);
+
   setTimeout(() => presentationMap.invalidateSize(), 150);
   loadPresentationGarages();
 };
+
+function togglePresentationSatellite() {
+  if (!presentationMap || !presentationStreetLayer || !presentationSatLayer) return;
+  presentationUseSat = !presentationUseSat;
+  const btn = document.getElementById('presentationSatBtn');
+
+  if (presentationUseSat) {
+    if (presentationMap.hasLayer(presentationStreetLayer)) presentationMap.removeLayer(presentationStreetLayer);
+    if (!presentationMap.hasLayer(presentationSatLayer)) presentationSatLayer.addTo(presentationMap);
+    if (btn) btn.textContent = '🗺️ Street';
+  } else {
+    if (presentationMap.hasLayer(presentationSatLayer)) presentationMap.removeLayer(presentationSatLayer);
+    if (!presentationMap.hasLayer(presentationStreetLayer)) presentationStreetLayer.addTo(presentationMap);
+    if (btn) btn.textContent = '🛰️ Satellite';
+  }
+}
 
 // ── Smart formatters (mirror app.js — work even if app.js not loaded) ──
 
