@@ -494,7 +494,8 @@ async function fetchTripUpdates() {
       if (!tu) continue;
       const rawTripId = tu.trip?.trip_id || '';
       const tripId = normalizeTripId(rawTripId);
-      const routeId = tu.trip?.route_id || db.store.tripToRoute[tripId] || '';
+      const rawRouteId = tu.trip?.route_id || '';
+      const routeId = db.store.tripToRoute[tripId] || rawRouteId || '';
       const ts      = Number(tu.timestamp) || Math.floor(Date.now() / 1000);
 
       const stopUpdates = (tu.stop_time_update || []).map(stu => {
