@@ -16,6 +16,7 @@ async function refreshAnalytics() {
     renderHeadwayChart(),
     renderDelayedStopsTable(),
     renderGTFSHealth(),
+    renderCascadeTable(),
   ]);
 }
 
@@ -400,3 +401,132 @@ window.refreshAnalytics = refreshAnalytics;
 window.refreshReports   = refreshReports;
 window.exportCSV        = exportCSV;
 window.exportJSON       = exportJSON;
+window.renderCascadeTable = renderCascadeTable;
+
+/* ═══════════════════════════════════════════════════════════════
+   Cascade Delay Originator Table
+   Fetches /api/analytics/cascade-delays and renders:
+     • 4 KPI cells (originators, avg gain, worst, routes)
+     • Sortable table with impact-score colouring
+     • Empty state when feed has no multi-stop updates yet
+═══════════════════════════════════════════════════════════════ */
+async function renderCascadeTable() {
+  const tbody   = document.getElementById('cascadeTableBody');
+  const noData  = document.getElementById('cascadeNoData');
+  const table   = document.getElementById('cascadeTable');
+
+  if (!tbody) return;
+  tbody.innerHTML = '<tr><td colspan="9" class="loading-cell">Loading…</td></tr>';
+  if (noData)  noData.style.display  = 'none';
+  if (table)   table.style.display   = '';
+
+  try {
+    const res  = await apiFetch('/analytics/cascade-delays');
+    const rows = res.data || [];
+
+    // ── KPIs ───────────────────────────────────────────────────
+    const totalOriginators = res.originator_count ?? rows.length;
+    const allAvgGains      = rows.map(r => r.avg_cascade_sec).filter(Boolean);
+    const overallAvgGain   = allAvgGains.length
+      ? Math.round(allAvgGains.reduce((a, b) => a + b, 0) / allAvgGains.length)
+      : 0;
+    const worstGain        = rows.length ? Math.max(...rows.map(r => r.max_cascade_sec)) : 0;
+    const routesAffected   = new Set(
+      rows.flatMap(r => (r.route_names || '').split(', ').filter(Boolean))
+    ).size;
+
+    _cvSetKpiText('cvCascadeOriginators', totalOriginators || '–');
+    _cvSetKpiText('cvCascadeAvgGain',
+      overallAvgGain ? `+${Math.round(overallAvgGain / 60 * 10) / 10} min` : '–');
+    _cvSetKpiText('cvCascadeWorst',
+      worstGain ? `+${Math.round(worstGain / 60 * 10) / 10} min` : '–');
+    _cvSetKpiText('cvCascadeRoutes', routesAffected || '–');
+
+    // ── Empty state ────────────────────────────────────────────
+    if (!rows.length) {
+      tbody.innerHTML = '';
+      if (noData)  noData.style.display  = '';
+      if (table)   table.style.display   = 'none';
+      return;
+    }
+
+    // ── Max impact score for colour scaling ───────────────────
+    const maxScore = Math.max(
+      ...rows.map(r => r.originator_count * r.avg_cascade_sec), 1
+    );
+
+    // ── Rows ──────────────────────────────────────────────────
+    tbody.innerHTML = rows.map((r, i) => {
+      const score        = r.originator_count * r.avg_cascade_sec;
+      const scorePct     = Math.round((score / maxScore) * 100);
+
+      // Bar colour: green → amber → red based on score percentile
+      const barColour    = scorePct >= 75 ? '#dc2626'
+        : scorePct >= 40 ? '#d97706'
+        : '#16a34a';
+
+      const avgMin       = r.avg_cascade_min.toFixed(1);
+      const maxMin       = r.max_cascade_min.toFixed(1);
+
+      // Impact bar — visual inside the cell
+      const bar = `
+        <div style="display:flex;align-items:center;gap:.4rem">
+          <div style="flex:1;height:6px;background:#f1f5f9;border-radius:3px;overflow:hidden">
+            <div style="width:${scorePct}%;height:100%;background:${barColour};border-radius:3px"></div>
+          </div>
+          <span style="font-size:.7rem;font-weight:700;color:${barColour};min-width:36px;text-align:right">
+            ${Math.round(score / 60)}
+          </span>
+        </div>`;
+
+      // Severity badge on avg gain
+      const gainBadge    = r.avg_cascade_sec >= 300
+        ? `<span style="display:inline-block;font-size:.63rem;padding:.05rem .3rem;
+             border-radius:4px;background:#fee2e2;color:#dc2626;margin-left:.3rem">HIGH</span>`
+        : r.avg_cascade_sec >= 120
+        ? `<span style="display:inline-block;font-size:.63rem;padding:.05rem .3rem;
+             border-radius:4px;background:#fef3c7;color:#d97706;margin-left:.3rem">MED</span>`
+        : '';
+
+      return `
+        <tr style="${i % 2 === 0 ? '' : 'background:var(--c-nav,#f8fafc)'}">
+          <td style="color:var(--c-muted);font-size:.74rem;text-align:center">${i + 1}</td>
+          <td>
+            <div style="font-weight:600;font-size:.8rem">${_escHtml(r.stop_name)}</div>
+            <div style="font-size:.68rem;color:var(--c-muted)">${r.stop_id}</div>
+          </td>
+          <td style="text-align:center;font-weight:700">${r.originator_count}</td>
+          <td style="text-align:center">
+            <span style="font-weight:700;color:${r.avg_cascade_sec >= 300 ? '#dc2626' : r.avg_cascade_sec >= 120 ? '#d97706' : 'var(--c-text)'}">
+              +${avgMin} min
+            </span>${gainBadge}
+          </td>
+          <td style="text-align:center;color:#dc2626;font-weight:600">+${maxMin} min</td>
+          <td style="text-align:center">${r.trips_affected}</td>
+          <td style="text-align:center;font-size:.74rem">${_escHtml(r.route_names)}</td>
+          <td style="text-align:center">${r.downstream_count}</td>
+          <td style="min-width:120px">${bar}</td>
+        </tr>`;
+    }).join('');
+
+  } catch (e) {
+    console.warn('Cascade table error:', e);
+    if (tbody) tbody.innerHTML =
+      `<tr><td colspan="9" class="loading-cell" style="color:#dc2626">
+        ⚠️ Error loading cascade data — ${_escHtml(e.message)}
+      </td></tr>`;
+  }
+}
+
+function _cvSetKpiText(id, val) {
+  const el = document.getElementById(id);
+  if (el) el.textContent = val;
+}
+
+function _escHtml(str) {
+  return String(str ?? '')
+    .replace(/&/g, '&amp;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;')
+    .replace(/"/g, '&quot;');
+}

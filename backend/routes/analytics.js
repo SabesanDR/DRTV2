@@ -806,6 +806,154 @@ router.get('/gtfs-health', (_req, res) => {
 
 
 /* ───────────────────────────────────────────────────────────────
+   GET /api/analytics/cascade-delays
+   ─────────────────────────────────────────────────────────────
+   Identifies stops that CAUSE cascading lateness — not just stops
+   that experience delays, but stops where a trip's delay grew
+   materially compared to the previous stop in the same trip.
+
+   Algorithm:
+   For every live trip_update that has ≥2 stop_updates (with
+   arrival_time unix values), walk the stops in stop_sequence order.
+   At each consecutive pair (A → B):
+     - Compute delta_A = arrival_time_A - scheduled_A
+     - Compute delta_B = arrival_time_B - scheduled_B
+     - cascade_gain = delta_B - delta_A
+   If cascade_gain ≥ CASCADE_THRESHOLD_SEC the bus lost time AT stop A
+   (boarding/alighting held it up). Stop A is the originator.
+
+   Accumulate across all trips:
+     originator_count  — how many times this stop originated a cascade
+     avg_cascade_gain  — mean seconds of extra delay injected per event
+     max_cascade_gain  — worst single injection
+     routes_affected   — distinct route IDs seen
+     downstream_stops  — set of stop_ids that received the cascade
+─────────────────────────────────────────────────────────────── */
+
+const CASCADE_THRESHOLD_SEC = 60; // min delay growth to count as a cascade
+
+router.get('/cascade-delays', (_req, res) => {
+  if (!ensureData(res)) return;
+
+  const tripUpdates = global.cache.tripUpdates || [];
+  const store       = db.store;
+
+  // stop_id → accumulator
+  const originMap = {};
+
+  for (const u of tripUpdates) {
+    if (!u.trip_id || !u.route_id) continue;
+
+    const sus = (u.stop_updates || []).filter(
+      s => s.stop_id && s.stop_sequence > 0 && s.arrival_time > 0
+    );
+    if (sus.length < 2) continue;
+
+    const stopTimes = store.stopTimesByTrip?.[u.trip_id]
+                   || store.stopTimesByTripNorm?.[u.trip_id];
+    if (!stopTimes) continue;
+
+    // Sort RT stop_updates by stop_sequence
+    const sorted = [...sus].sort((a, b) => a.stop_sequence - b.stop_sequence);
+
+    // Compute scheduled unix for each RT stop
+    const withDelta = [];
+    for (const s of sorted) {
+      const staticStop =
+        stopTimes.find(st => st.stop_sequence === s.stop_sequence) ||
+        stopTimes.find(st => st.stop_id === s.stop_id);
+      if (!staticStop?.arrival_time) continue;
+
+      const scheduledUnix = scheduledStopTimeToUnix(s.arrival_time, staticStop.arrival_time);
+      if (!scheduledUnix) continue;
+
+      const deltaSec = s.arrival_time - scheduledUnix;
+      if (!Number.isFinite(deltaSec)) continue;
+
+      withDelta.push({ stop_id: s.stop_id, stop_sequence: s.stop_sequence, deltaSec });
+    }
+
+    if (withDelta.length < 2) continue;
+
+    // Walk consecutive pairs
+    for (let i = 0; i < withDelta.length - 1; i++) {
+      const curr = withDelta[i];
+      const next = withDelta[i + 1];
+
+      const cascadeGain = next.deltaSec - curr.deltaSec;
+      if (cascadeGain < CASCADE_THRESHOLD_SEC) continue;
+
+      // curr.stop_id is the originator — the bus was on time(r) arriving here
+      // but left late, injecting cascadeGain seconds into all downstream stops
+      if (!originMap[curr.stop_id]) {
+        originMap[curr.stop_id] = {
+          originator_count: 0,
+          cascade_gains:    [],
+          routes_affected:  new Set(),
+          downstream_stops: new Set(),
+          trip_ids_seen:    new Set(),
+        };
+      }
+
+      const entry = originMap[curr.stop_id];
+      entry.originator_count++;
+      entry.cascade_gains.push(cascadeGain);
+      entry.routes_affected.add(u.route_id);
+      entry.downstream_stops.add(next.stop_id);
+      entry.trip_ids_seen.add(u.trip_id);
+
+      // Also record all subsequent stops as downstream (not just immediate next)
+      for (let j = i + 2; j < withDelta.length; j++) {
+        entry.downstream_stops.add(withDelta[j].stop_id);
+      }
+    }
+  }
+
+  const rows = Object.entries(originMap).map(([stopId, d]) => {
+    const stop          = store.stopsById?.[stopId];
+    const gains         = d.cascade_gains;
+    const avgGain       = gains.length
+      ? Math.round(gains.reduce((a, b) => a + b, 0) / gains.length)
+      : 0;
+    const maxGain       = gains.length ? Math.max(...gains) : 0;
+    const routeIds      = [...d.routes_affected];
+    const routeNames    = routeIds
+      .map(rid => store.routesById?.[rid]?.route_short_name || rid)
+      .sort()
+      .join(', ');
+
+    return {
+      stop_id:           stopId,
+      stop_name:         stop?.stop_name  || stopId,
+      stop_lat:          stop?.stop_lat   || null,
+      stop_lon:          stop?.stop_lon   || null,
+      originator_count:  d.originator_count,
+      avg_cascade_sec:   avgGain,
+      avg_cascade_min:   Math.round((avgGain / 60) * 10) / 10,
+      max_cascade_sec:   maxGain,
+      max_cascade_min:   Math.round((maxGain / 60) * 10) / 10,
+      trips_affected:    d.trip_ids_seen.size,
+      routes_affected:   routeIds.length,
+      route_names:       routeNames,
+      downstream_count:  d.downstream_stops.size,
+    };
+  });
+
+  // Sort by cascade impact score: frequency × average severity
+  rows.sort((a, b) =>
+    (b.originator_count * b.avg_cascade_sec) -
+    (a.originator_count * a.avg_cascade_sec)
+  );
+
+  res.json({
+    cascade_threshold_sec: CASCADE_THRESHOLD_SEC,
+    originator_count: rows.length,
+    data: rows.slice(0, 30),
+  });
+});
+
+
+/* ───────────────────────────────────────────────────────────────
    EXPORT ROUTER (ONLY ONCE)
 ─────────────────────────────────────────────────────────────── */
 

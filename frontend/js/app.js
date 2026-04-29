@@ -36,6 +36,7 @@ function switchTab(name) {
 
   if (name === 'map')       { initMap();       refreshMapVehicles(); }
   if (name === 'analytics') { refreshAnalytics(); }
+  if (name === 'coverage')  { window.initCoverage(); }
   if (name === 'reports')   { refreshReports(); }
   if (name === 'presentation') { startPresentation(); }
   if (name === 'rewind')    { window.initRewind(); }

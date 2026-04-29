@@ -8,7 +8,13 @@ window.liveVehicleMarkers = {};
 let _map         = null;
 let _mapInited   = false;
 let _mapInterval = null;
-let _showLateOnly = false;
+let _showLateOnly  = false;
+let _showEarlyOnly = false;
+
+// Satellite toggle state
+let _mapStreetLayer    = null;
+let _mapSatLayer       = null;
+let _mapUseSatellite   = false;
 
 // Layer groups
 const LG = {
@@ -42,10 +48,36 @@ function initMap() {
     preferCanvas: true,
   });
 
-  L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', {
+  // ── Tile layers ───────────────────────────────────────────────
+  _mapStreetLayer = L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', {
     attribution: '© <a href="https://openstreetmap.org">OpenStreetMap</a>',
     maxZoom: 19,
-  }).addTo(_map);
+  });
+
+  _mapSatLayer = L.tileLayer(
+    'https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/{z}/{y}/{x}',
+    {
+      attribution: 'Tiles © Esri — Source: Esri, USGS, NOAA',
+      maxZoom: 19,
+    }
+  );
+
+  _mapStreetLayer.addTo(_map);
+
+  // Wire satellite toggle button
+  document.getElementById('mapSatBtn')?.addEventListener('click', () => {
+    _mapUseSatellite = !_mapUseSatellite;
+    const btn = document.getElementById('mapSatBtn');
+    if (_mapUseSatellite) {
+      _map.removeLayer(_mapStreetLayer);
+      _mapSatLayer.addTo(_map);
+      if (btn) { btn.textContent = '🗺️ Street View'; btn.title = 'Switch to street map'; }
+    } else {
+      _map.removeLayer(_mapSatLayer);
+      _mapStreetLayer.addTo(_map);
+      if (btn) { btn.textContent = '🛰️ Satellite'; btn.title = 'Switch to satellite imagery'; }
+    }
+  });
   
   // ── Map panes (visual hierarchy) ───────────────────────────────
   _map.createPane('garagePane');
@@ -65,6 +97,21 @@ function initMap() {
 
   document.getElementById('togLateOnly')?.addEventListener('change', e => {
     _showLateOnly = e.target.checked;
+    if (_showLateOnly && _showEarlyOnly) {
+      _showEarlyOnly = false;
+      const earlyTog = document.getElementById('togEarlyOnly');
+      if (earlyTog) earlyTog.checked = false;
+    }
+    refreshMapVehicles();
+  });
+
+  document.getElementById('togEarlyOnly')?.addEventListener('change', e => {
+    _showEarlyOnly = e.target.checked;
+    if (_showEarlyOnly && _showLateOnly) {
+      _showLateOnly = false;
+      const lateTog = document.getElementById('togLateOnly');
+      if (lateTog) lateTog.checked = false;
+    }
     refreshMapVehicles();
   });
 
@@ -303,11 +350,11 @@ async function refreshMapVehicles() {
     const vehicles = data.data || [];
     let visibleVehicles = vehicles;
 
-    // FIX: Filter by performance_status (set by ontimeEngine on the backend),
-    // not by raw delay_seconds arithmetic. This keeps the filter in sync with
-    // the icon color logic in vehicleIcon() which also reads performance_status.
+    // Filter by performance_status — mutually exclusive toggles
     if (_showLateOnly) {
       visibleVehicles = vehicles.filter(v => v.performance_status === 'late');
+    } else if (_showEarlyOnly) {
+      visibleVehicles = vehicles.filter(v => v.performance_status === 'early');
     }
 
     window.global_vehicles_cache = vehicles;
@@ -372,8 +419,9 @@ async function refreshMapVehicles() {
     if (lc) {
       const snapped = visibleVehicles.filter(v => v.snapped).length;
       const stale   = visibleVehicles.filter(v => v.is_stale).length;
+      const filterLabel = _showLateOnly ? 'late ' : _showEarlyOnly ? 'early ' : '';
       lc.innerHTML =
-        `<b>${visibleVehicles.length}</b> ${_showLateOnly ? 'late' : ''} vehicles<br>` +
+        `<b>${visibleVehicles.length}</b> ${filterLabel}vehicles<br>` +
           `<span style="color:#16a34a">${snapped} snapped</span> · ` +
           `<span style="color:#d97706">${stale} stale</span>`;
     }
@@ -413,11 +461,11 @@ function vehicleIcon(v) {
   const label   = v.route_variant || v.route_id || '?';
 
   // ── Direction arrow ───────────────────────────────────────────
-  // Use bearing from the GTFS-RT position field (0=N, 90=E, 180=S, 270=W).
-  // The arrow is a small triangle rendered outside the circle in the
-  // direction of travel so it visually follows the route line.
+  // Only shown when a route is selected — too noisy on the all-routes view.
+  // Uses bearing from GTFS-RT (0=N, 90=E, 180=S, 270=W).
   let arrowHtml = '';
-  const bearing = typeof v.bearing === 'number' && v.bearing > 0 ? v.bearing : null;
+  const bearing = _currentRouteId &&
+    typeof v.bearing === 'number' && v.bearing >= 0 ? v.bearing : null;
   if (bearing !== null) {
     // Offset the arrow tip 2px outside the circle border
     const arrowLen  = 8;   // px from centre to arrow tip
@@ -768,9 +816,12 @@ function renderLateBusSummary(lateVehicles) {
 }
 
 window.filterToLateRoute = function(routeId) {
-  _showLateOnly = true;
-  const tog = document.getElementById('togLateOnly');
-  if (tog) tog.checked = true;
+  _showLateOnly  = true;
+  _showEarlyOnly = false;
+  const lateTog  = document.getElementById('togLateOnly');
+  const earlyTog = document.getElementById('togEarlyOnly');
+  if (lateTog)  lateTog.checked  = true;
+  if (earlyTog) earlyTog.checked = false;
   const sel = document.getElementById('routeSelect');
   if (sel) { sel.value = routeId; sel.dispatchEvent(new Event('change')); }
 };

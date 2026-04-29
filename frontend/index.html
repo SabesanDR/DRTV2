@@ -39,7 +39,8 @@
   <button class="nav-btn active" data-tab="dashboard">Dashboard</button>
   <button class="nav-btn" data-tab="map">Live Map</button>
   <button class="nav-btn" data-tab="analytics">Analytics</button>
-  <button class="nav-btn" data-tab="rewind">⏪ Rewind</button>
+  <button class="nav-btn" data-tab="coverage">Coverage Map</button>
+  <button class="nav-btn" data-tab="rewind"> Rewind</button>
   <button class="nav-btn" data-tab="reports">Reports</button>
   <button class="nav-btn" data-tab="export">Export</button>
   <button class="nav-btn" data-tab="admin">Admin</button>
@@ -175,6 +176,7 @@
           <label class="toggle-row"><input type="checkbox" id="togSnapped"><span>Show raw GPS</span></label>
           <label class="toggle-row"><input type="checkbox" id="togGarages" checked><span>Garages</span></label>
           <label class="toggle-row"><input type="checkbox" id="togLateOnly"><span>Show late vehicles only</span></label>
+          <label class="toggle-row"><input type="checkbox" id="togEarlyOnly"><span>Show early vehicles only</span></label>
         </div>
         <div class="sidebar-section">
           <div class="sidebar-label">Map Legend</div>
@@ -206,6 +208,14 @@
       <!-- Map container -->
       <div class="map-wrap">
         <div id="leafletMap"></div>
+        <!-- Satellite toggle -->
+        <button id="mapSatBtn" title="Switch to satellite imagery"
+          style="position:absolute;top:10px;right:10px;z-index:1000;
+                 padding:.28rem .65rem;border:1px solid var(--c-border);border-radius:var(--radius);
+                 background:var(--c-surface);cursor:pointer;font-size:.76rem;color:var(--c-text);
+                 box-shadow:0 1px 4px rgba(0,0,0,.15)">
+          🛰️ Satellite
+        </button>
         <!-- Info panel -->
         <div class="map-info-panel" id="mapInfoPanel" style="display:none">
           <button class="info-close" onclick="document.getElementById('mapInfoPanel').style.display='none'">✕</button>
@@ -264,11 +274,190 @@
         </div>
       </div>
 
+      <!-- Cascade Delay Originators — full width -->
+      <div class="card analytics-card card--full">
+        <div class="card-hdr">
+          <h2>Cascade Delay Originators</h2>
+          <span style="font-size:.72rem;color:var(--c-muted);font-weight:400;margin-left:.5rem">
+            Stops where trips lose time, injecting delays into downstream stops
+          </span>
+          <button id="cascadeRefreshBtn"
+            onclick="renderCascadeTable()"
+            style="margin-left:auto;padding:.2rem .55rem;border:1px solid var(--c-border);
+                   border-radius:var(--radius);background:var(--c-surface);cursor:pointer;
+                   font-size:.72rem;color:var(--c-text)">↻ Refresh</button>
+        </div>
+
+        <!-- KPI strip -->
+        <div id="cascadeKpis"
+          style="display:flex;gap:0;border-bottom:1px solid var(--c-border)">
+          <div style="flex:1;padding:.4rem .75rem;border-right:1px solid var(--c-border)">
+            <div style="font-size:.65rem;text-transform:uppercase;letter-spacing:.06em;color:var(--c-muted)">Originator Stops</div>
+            <div id="cvCascadeOriginators" style="font-size:1.1rem;font-weight:800;color:var(--c-text)">–</div>
+          </div>
+          <div style="flex:1;padding:.4rem .75rem;border-right:1px solid var(--c-border)">
+            <div style="font-size:.65rem;text-transform:uppercase;letter-spacing:.06em;color:var(--c-muted)">Avg Cascade Gain</div>
+            <div id="cvCascadeAvgGain" style="font-size:1.1rem;font-weight:800;color:#d97706">–</div>
+          </div>
+          <div style="flex:1;padding:.4rem .75rem;border-right:1px solid var(--c-border)">
+            <div style="font-size:.65rem;text-transform:uppercase;letter-spacing:.06em;color:var(--c-muted)">Worst Single Cascade</div>
+            <div id="cvCascadeWorst" style="font-size:1.1rem;font-weight:800;color:#dc2626">–</div>
+          </div>
+          <div style="flex:1;padding:.4rem .75rem">
+            <div style="font-size:.65rem;text-transform:uppercase;letter-spacing:.06em;color:var(--c-muted)">Routes Affected</div>
+            <div id="cvCascadeRoutes" style="font-size:1.1rem;font-weight:800;color:var(--c-text)">–</div>
+          </div>
+        </div>
+
+        <!-- Table -->
+        <div style="overflow-x:auto">
+          <table class="data-table" id="cascadeTable">
+            <thead>
+              <tr>
+                <th style="width:2rem">#</th>
+                <th>Stop</th>
+                <th title="How many times this stop originated a cascade event">Cascade Events</th>
+                <th title="Mean extra delay injected per event">Avg Gain</th>
+                <th title="Worst single cascade injection">Max Gain</th>
+                <th title="Distinct trips affected">Trips</th>
+                <th title="Distinct routes affected">Routes</th>
+                <th title="How many downstream stops received the cascaded delay">Downstream Stops</th>
+                <th title="Impact score = events × avg gain — higher means more damaging">Impact Score</th>
+              </tr>
+            </thead>
+            <tbody id="cascadeTableBody">
+              <tr><td colspan="9" class="loading-cell">Loading…</td></tr>
+            </tbody>
+          </table>
+        </div>
+
+        <!-- No-data notice (hidden until needed) -->
+        <div id="cascadeNoData"
+          style="display:none;padding:1.5rem;text-align:center;color:var(--c-muted);font-size:.8rem">
+          <div style="font-size:1.5rem;margin-bottom:.4rem">📭</div>
+          No cascade events detected yet — this requires live trip update data with
+          multiple stop_time_updates per trip. Data builds as trips run.
+        </div>
+      </div>
+
     </div>
   </section>
 
 
 
+
+
+  <!-- ══ COVERAGE MAP TAB ════════════════════════════════════════ -->
+  <section id="tab-coverage" class="tab">
+    <div style="display:flex;flex-direction:column;height:calc(100vh - 56px - 42px)">
+
+      <!-- ── Toolbar ──────────────────────────────────────────────── -->
+      <div style="display:flex;align-items:center;gap:.75rem;flex-wrap:wrap;
+                  padding:.5rem 1rem;background:var(--c-surface);
+                  border-bottom:1px solid var(--c-border);flex-shrink:0">
+
+        <!-- Route filter -->
+        <div style="display:flex;align-items:center;gap:.4rem">
+          <label style="font-size:.76rem;font-weight:600;color:var(--c-muted);white-space:nowrap">Route:</label>
+          <select id="cvRouteFilter"
+            style="padding:.28rem .55rem;border:1px solid var(--c-border);border-radius:var(--radius);
+                   font-size:.78rem;background:var(--c-surface);color:var(--c-text);min-width:180px">
+            <option value="">— All Routes —</option>
+          </select>
+        </div>
+
+        <!-- Gap threshold -->
+        <div style="display:flex;align-items:center;gap:.4rem">
+          <label style="font-size:.76rem;font-weight:600;color:var(--c-muted);white-space:nowrap"
+            title="Cells with fewer than this many stops are flagged as gaps">
+            Gap threshold:
+          </label>
+          <input id="cvThreshold" type="range" min="1" max="5" value="1"
+            style="width:80px;accent-color:var(--c-drt)">
+          <span id="cvThresholdLabel"
+            style="font-size:.76rem;font-weight:700;color:var(--c-text);min-width:12px">1</span>
+          <span style="font-size:.72rem;color:var(--c-muted)">stop/cell</span>
+        </div>
+
+        <!-- Layer toggles -->
+        <label style="display:flex;align-items:center;gap:.3rem;font-size:.76rem;cursor:pointer">
+          <input type="checkbox" id="cvShowStops" checked>
+          <span>Show stops</span>
+        </label>
+        <label style="display:flex;align-items:center;gap:.3rem;font-size:.76rem;cursor:pointer">
+          <input type="checkbox" id="cvShowGaps" checked>
+          <span>Show gap overlay</span>
+        </label>
+
+        <!-- Satellite toggle -->
+        <button id="cvSatBtn" title="Switch to satellite imagery"
+          style="padding:.28rem .65rem;border:1px solid var(--c-border);border-radius:var(--radius);
+                 background:var(--c-surface);cursor:pointer;font-size:.76rem;color:var(--c-text)">
+          🛰️ Satellite
+        </button>
+
+        <!-- Status message -->
+        <span id="cvStatus"
+          style="display:none;font-size:.74rem;color:var(--c-muted);font-style:italic"></span>
+      </div>
+
+      <!-- ── KPI bar ───────────────────────────────────────────────── -->
+      <div style="display:flex;gap:0;flex-shrink:0;border-bottom:1px solid var(--c-border)">
+        <div style="flex:1;padding:.5rem 1rem;text-align:center;border-right:1px solid var(--c-border)">
+          <div style="font-size:.68rem;text-transform:uppercase;letter-spacing:.06em;
+                      color:var(--c-muted);margin-bottom:.1rem">Total Stops</div>
+          <div id="cvKpiStops"
+            style="font-size:1.3rem;font-weight:800;color:var(--c-text)">–</div>
+        </div>
+        <div style="flex:1;padding:.5rem 1rem;text-align:center;border-right:1px solid var(--c-border)">
+          <div style="font-size:.68rem;text-transform:uppercase;letter-spacing:.06em;
+                      color:var(--c-muted);margin-bottom:.1rem">Coverage</div>
+          <div id="cvKpiCoverage"
+            style="font-size:1.3rem;font-weight:800">–</div>
+        </div>
+        <div style="flex:1;padding:.5rem 1rem;text-align:center;border-right:1px solid var(--c-border)">
+          <div style="font-size:.68rem;text-transform:uppercase;letter-spacing:.06em;
+                      color:var(--c-muted);margin-bottom:.1rem">Gap Cells</div>
+          <div id="cvKpiGaps"
+            style="font-size:1.3rem;font-weight:800;color:#dc2626">–</div>
+        </div>
+        <div style="flex:1;padding:.5rem 1rem;text-align:center">
+          <div style="font-size:.68rem;text-transform:uppercase;letter-spacing:.06em;
+                      color:var(--c-muted);margin-bottom:.1rem">Avg Trips/Stop</div>
+          <div id="cvKpiAvgTrips"
+            style="font-size:1.3rem;font-weight:800;color:var(--c-text)">–</div>
+        </div>
+      </div>
+
+      <!-- ── Map ──────────────────────────────────────────────────── -->
+      <div style="flex:1;position:relative;min-height:0">
+        <div id="coverageMap" style="width:100%;height:100%"></div>
+
+        <!-- Legend -->
+        <div style="position:absolute;bottom:24px;left:12px;z-index:1000;
+                    background:rgba(255,255,255,.93);backdrop-filter:blur(6px);
+                    border:1px solid var(--c-border);border-radius:var(--radius);
+                    padding:.55rem .75rem;font-size:.72rem;line-height:1.9;
+                    box-shadow:var(--shadow-md)">
+          <div style="font-weight:700;margin-bottom:.2rem">Legend</div>
+          <div><span style="display:inline-block;width:11px;height:11px;border-radius:50%;
+            background:#94a3b8;margin-right:6px;vertical-align:middle"></span>No trip data</div>
+          <div><span style="display:inline-block;width:11px;height:11px;border-radius:50%;
+            background:#f59e0b;margin-right:6px;vertical-align:middle"></span>Low frequency</div>
+          <div><span style="display:inline-block;width:11px;height:11px;border-radius:50%;
+            background:#3b82f6;margin-right:6px;vertical-align:middle"></span>Moderate frequency</div>
+          <div><span style="display:inline-block;width:11px;height:11px;border-radius:50%;
+            background:#16a34a;margin-right:6px;vertical-align:middle"></span>High frequency</div>
+          <div style="margin-top:.3rem">
+            <span style="display:inline-block;width:11px;height:11px;
+              background:rgba(220,38,38,.35);border:1px solid rgba(220,38,38,.4);
+              margin-right:6px;vertical-align:middle"></span>Coverage gap
+          </div>
+        </div>
+      </div>
+
+    </div>
+  </section>
 
 
   <!-- ══ REWIND TAB ════════════════════════════════════════════════ -->
@@ -515,8 +704,16 @@
     </div>
 
     <!-- RIGHT PANEL: Map -->
-    <div id="presentation-map-container">
+    <div id="presentation-map-container" style="position:relative">
       <div id="presentationMap"></div>
+      <!-- Satellite toggle -->
+      <button id="presentationSatBtn" title="Switch to satellite imagery"
+        style="position:absolute;top:10px;right:10px;z-index:1000;
+               padding:.28rem .65rem;border:1px solid var(--c-border);border-radius:var(--radius);
+               background:var(--c-surface);cursor:pointer;font-size:.76rem;color:var(--c-text);
+               box-shadow:0 1px 4px rgba(0,0,0,.15)">
+        🛰️ Satellite
+      </button>
     </div>
 
   </div>
@@ -527,8 +724,16 @@
 <!-- ── RAW GPS MAP TAB ─────────────────────────────────────────── -->
 <section id="tab-rawMap" class="tab">
   <div class="map-layout">
-    <div class="map-wrap">
+    <div class="map-wrap" style="position:relative">
       <div id="rawMap"></div>
+      <!-- Satellite toggle -->
+      <button id="rawSatToggle" title="Switch to satellite imagery"
+        style="position:absolute;top:10px;right:10px;z-index:1000;
+               padding:.28rem .65rem;border:1px solid var(--c-border);border-radius:var(--radius);
+               background:var(--c-surface);cursor:pointer;font-size:.76rem;color:var(--c-text);
+               box-shadow:0 1px 4px rgba(0,0,0,.15)">
+        🛰️ Satellite
+      </button>
     </div>
   </div>
 </section>
@@ -594,6 +799,7 @@
 <script src="js/admin.js"></script>
 <script src="js/export.js"></script>
 <script src="js/rawMap.js"></script>
+<script src="js/coverage.js"></script>
 <script src="js/rewind.js"></script>
 <script>
   // Initialise export panel the first time the Export tab is clicked
