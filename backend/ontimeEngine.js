@@ -736,7 +736,14 @@ function evaluateAll(vehicles, store) {
       v.next_stops           = s.next_stops || [];
 
       // Speed
-      v.calculated_speed_kmh = s.speed_kmh;
+      // Only expose speed to the frontend when it comes from a real measurement
+      // (GPS delta between polls, or GTFS-RT reported speed).
+      // When deriveSpeed() fell back to the 30 km/h urban default, we set
+      // calculated_speed_kmh to null so the popup shows nothing — we only want
+      // to display information we actually know.
+      // NOTE: speedMps is still used internally for ETA calculation above, so
+      // suppressing it here has zero effect on delay classification or ETA.
+      v.calculated_speed_kmh = s.speed_source === 'default' ? null : s.speed_kmh;
       v.speed_source         = s.speed_source;
       v.gps_delta_dist_m     = s.gps_delta_dist_m;
       v.gps_delta_dt_sec     = s.gps_delta_dt_sec;
